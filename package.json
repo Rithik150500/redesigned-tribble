@@ -1,0 +1,18 @@
+{
+  "name": "legal-analysis-frontend",
+  "version": "1.0.0",
+  "dependencies": {
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "@react-pdf-viewer/core": "^3.12.0",
+    "@react-pdf-viewer/default-layout": "^3.12.0",
+    "@monaco-editor/react": "^4.6.0",
+    "pdfjs-dist": "^3.4.120",
+    "react-split-pane": "^0.1.92"
+  },
+  "scripts": {
+    "start": "react-scripts start",
+    "build": "react-scripts build",
+    "test": "react-scripts test"
+  }
+}
