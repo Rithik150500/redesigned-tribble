@@ -1,0 +1,36 @@
+# Coverage configuration for Legal Risk Analysis System
+
+[run]
+source = .
+omit =
+    */tests/*
+    */venv/*
+    */migrations/*
+    */__pycache__/*
+    */site-packages/*
+    setup.py
+
+[report]
+exclude_lines =
+    # Standard pragma
+    pragma: no cover
+
+    # Don't complain about missing debug code
+    def __repr__
+    def __str__
+
+    # Don't complain if tests don't hit defensive assertion code
+    raise AssertionError
+    raise NotImplementedError
+
+    # Don't complain if non-runnable code isn't run
+    if __name__ == .__main__.:
+
+    # Don't complain about abstract methods
+    @abstractmethod
+
+precision = 2
+show_missing = True
+
+[html]
+directory = htmlcov
