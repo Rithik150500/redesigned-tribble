@@ -1,0 +1,281 @@
+# Understanding Your Legal Risk Analysis Architecture
+
+Let me help you understand how to build this sophisticated legal analysis system by breaking it down into its core components and showing how they work together.
+
+## The Three-Layer Architecture
+
+Your application has three distinct layers that work together, and understanding each one will help you see how the whole system operates.
+
+The **Document Processing Layer** is where everything begins. Think of this as your preparation phase - you're taking raw PDF documents and transforming them into a format that AI agents can effectively reason about. This happens before any agent interaction begins, creating a rich database of pre-processed information.
+
+The **Agent Orchestration Layer** is where the intelligence lives. This is where Deep Agents work through the legal analysis, making decisions about which documents to examine, when to dig deeper into specific pages, and when to conduct additional research. The agents operate with varying levels of autonomy while maintaining human oversight at critical decision points.
+
+The **User Interface Layer** provides the human oversight and interaction model. This isn't just a display - it's an active workspace where you review agent decisions, guide the analysis when needed, and maintain control over sensitive operations.
+
+## Building the Document Processing Pipeline
+
+Let me walk you through how the document processing works, because this foundation determines everything that comes after.
+
+### Initial Document Ingestion
+
+When a PDF document arrives in your data room folder, you need to decompose it into analyzable units. The first step extracts each page as both an image and text content. You can use libraries like PyPDF2 or pdfplumber for text extraction, and pdf2image for rendering pages as images. This dual representation is crucial because sometimes the visual layout conveys meaning that pure text extraction misses - think of tables, highlighted sections, or marginal notes.
+
+For each page, you'll send both the image and extracted text to Claude Haiku. The prompt should be carefully structured: "Given this legal document page image and its text content, provide a one-sentence summary that captures the legal significance or main topic of this page." Claude Haiku is perfect for this task because you're processing potentially hundreds of pages, and Haiku offers the right balance of speed and accuracy for summarization.
+
+### Creating Document-Level Intelligence
+
+Once you have all the page summaries for a document, you combine them and send them back to Claude Haiku with a different prompt: "Given these page summaries from a legal document, provide a two to three sentence overview of the document's purpose and key topics. Additionally, identify which page numbers contain legally significant information such as obligations, deadlines, risk factors, or material terms."
+
+This creates your document-level intelligence. You now have a concise description that lets agents quickly understand what each document contains, plus a map of which pages warrant deeper examination. This is similar to how a human lawyer would first skim through documents to understand their general nature before diving into the details.
+
+### Database Schema Design
+
+Your database structure reflects this hierarchical understanding. The documents table stores the document itself along with its summarized description. Each document links to multiple entries in the pages table, where you store the page number, its summary, the extracted text, the page image, and a boolean flag indicating legal significance.
+
+This schema enables efficient querying. An agent can start by listing all documents with their summaries, then drill down to specific documents by retrieving their legally significant pages, and finally examine individual page content only when necessary. This mirrors the natural investigative process and prevents overwhelming the agent's context window with unnecessary detail.
+
+## Architecting the Agent System
+
+Now let's understand how the agent orchestration layer works, because this is where the Deep Agents framework really shines.
+
+### The Main Agent: Legal Risk Analysis Coordinator
+
+Your main Legal Risk Analysis Deep Agent acts as a coordinator and strategist. It receives the user's initial message containing all document summaries from the data room. From this high-level view, it needs to formulate an analysis strategy.
+
+The system prompt should establish its role: "You are a legal risk analysis expert. Your task is to comprehensively analyze company legal documents to identify potential risks, obligations, and areas of concern. You have access to document summaries and can delegate detailed analysis to specialized subagents. Develop a systematic approach to reviewing all relevant documents, then synthesize your findings into a comprehensive risk analysis report."
+
+The main agent has access to three types of middleware. The TodoListMiddleware lets it break down the analysis into trackable steps - perhaps "Review all employment agreements," "Analyze contract termination clauses," "Assess intellectual property protections." The FilesystemMiddleware gives it a workspace to store intermediate findings and notes. The SubAgentMiddleware enables delegation to specialized subagents for detailed work.
+
+This agent has two subagents available. The Analysis subagent can be used unlimited times for investigating specific aspects of documents. The Create Report subagent can be used exactly once at the end to synthesize all findings into a final report. This constraint ensures the agent follows a proper workflow: research first, report last.
+
+### The Analysis Subagent: Deep Investigation
+
+The Analysis subagent is where the real investigative work happens. When the main agent delegates a task like "Analyze employment agreements for non-compete clauses," the Analysis subagent receives this focused assignment and works in isolation.
+
+The Analysis subagent's system prompt should emphasize thorough investigation: "You are a specialized legal analyst. Examine assigned documents in detail, identifying relevant legal issues, risks, and notable provisions. Use document analysis tools to access content, and web research tools to verify legal standards or precedents when needed. Document your findings clearly for synthesis into the final report."
+
+This subagent has access to several critical tools through custom MCP servers. Let me explain how each tool works and why it's designed that way.
+
+The **list documents** tool returns all documents with their IDs, summaries, and page counts. This gives the subagent a catalog to work from. The subagent might see "Employment_Agreement_2024.pdf (ID: 47) - Standard employment contract with non-compete provisions (23 pages)" and decide this warrants investigation.
+
+The **get documents** tool takes an array of document IDs and returns something quite sophisticated. For each document, it provides the combined page summaries, giving context about the document's structure and content. Crucially, it also includes the full text of legally significant pages. This design is intentional - you're automatically surfacing the most important content without requiring the agent to explicitly request each page. The agent receives a rich view of relevant documents without drowning in hundreds of pages of boilerplate text.
+
+The **get page text** tool allows targeted retrieval when the agent needs specific pages that weren't marked as legally significant, or when it wants to see surrounding context. You pass document IDs and page numbers, and receive the extracted text for those pages.
+
+The **get page image** tool is marked as limited use, and this is important for cost and latency management. Images consume significantly more tokens than text. This tool should only be used when the visual layout matters - perhaps for reviewing a complex table, examining a signature block, or understanding a document's structure. The agent should exhaust text-based analysis before requesting images.
+
+The Analysis subagent also has web research capabilities. The **web search** tool lets it look up legal standards, recent case law, or regulatory requirements that inform the analysis. The **URL content** tool, also marked as limited use, enables deep reading of specific sources when a web search snippet isn't sufficient.
+
+The Analysis subagent additionally has access to a general-purpose subagent. This provides an interesting capability - if the Analysis subagent encounters a particularly complex subtask, it can delegate to the general-purpose subagent for context isolation. For example, if it's analyzing a licensing agreement and needs to research software licensing precedents extensively, it might delegate that research to keep its own context focused on the primary analysis.
+
+### The Create Report Subagent: Synthesis
+
+The Create Report subagent has a singular focused purpose: taking all the findings and creating a polished legal risk analysis report. Its system prompt might read: "You are a legal report writer. Using all analysis findings and notes from the filesystem, create a comprehensive legal risk analysis report. Structure the report with an executive summary, detailed findings by category, risk assessments, and recommendations. Write in clear, professional language suitable for executive review."
+
+This subagent only has access to FilesystemMiddleware because it's purely a synthesis task. By the time this subagent is invoked, all the analysis work is complete and documented in files. The subagent reads those files, organizes the information, and produces the final deliverable.
+
+The constraint of using this subagent only once enforces good workflow discipline. The main agent can't repeatedly generate draft reports - it needs to ensure analysis is complete before invoking this final step.
+
+## Implementing the MCP Tools
+
+Your document analysis tools need to be implemented as MCP servers because they provide the bridge between the agents and your document database. Let me show you how to think about implementing these.
+
+### Creating the Document Analysis MCP Server
+
+You would create a custom MCP server that exposes the four document analysis tools. This server maintains a connection to your document database and handles all the queries.
+
+The **list documents** implementation is straightforward - query the documents table and return formatted results. The challenge is in formatting: you want to provide enough information for the agent to make decisions, but not so much that you overwhelm the context window. A good format might be: "Document [ID]: [summdesc] ([page_count] pages, [legally_significant_count] legally significant pages)."
+
+The **get documents** implementation is more complex because it needs to construct a rich, multi-layered response. For each requested document ID, you query the pages table to get all page summaries in order. You concatenate these with clear separators to show document structure. Then you add a section with the full text of all pages where the legally_significant flag is set. This gives the agent a complete picture: the document's organization through page summaries, plus immediate access to the most important content.
+
+The **get page text** implementation is a simple lookup - retrieve the page_text field for the specified document IDs and page numbers. The key is in formatting the response so the agent clearly understands which text corresponds to which page.
+
+The **get page image** implementation retrieves the stored page images. Since you marked this as limited use, you might want to implement token cost tracking within the tool itself, warning the agent when it's approaching usage limits. Images should be returned in a format that Claude can process directly - typically as base64-encoded data with the appropriate media type.
+
+### Implementing Usage Limits
+
+For the limited-use tools (get page image and URL content), you need to track usage within each agent session. You could implement this at the MCP server level by maintaining session state, or at the application level by intercepting tool calls and maintaining counts.
+
+A practical approach is to include usage information in tool responses. When an agent calls get page image, the response might include metadata: "Image retrieved successfully. You have used 3 of 10 allowed image retrievals for this analysis session." This keeps the agent informed about its remaining resources and encourages judicious use.
+
+## Designing the Human Approval System
+
+The human-in-the-loop capabilities are what transform this from an automated system into a collaborative analysis tool. Let's think through how each approval point works.
+
+### Approval Architecture
+
+Deep Agents supports human-in-the-loop through the `interrupt_on` parameter. For your use case, you would configure interrupts for specific tools:
+
+```python
+interrupt_on = {
+    "write_todos": True,
+    "task": True,  # Subagent invocations
+    "get_documents": True,
+    "get_page_text": True,
+    "get_page_image": True,
+    "write_file": True,
+    "edit_file": True,
+    "web_search": True,
+    "web_fetch": True,  # URL content
+}
+```
+
+When any of these tools is about to be called, execution pauses. The agent's proposed action is captured and sent to your web interface for review. The user can approve the action as-is, edit the parameters, or reject it entirely.
+
+### Context-Aware UI Updates
+
+The clever part of your design is that the UI highlights relevant information based on what the agent wants to do. When the agent calls get documents with specific document IDs, your UI highlights those documents in the left panel and opens the PDF viewer showing which pages are legally significant. This gives you immediate context for the approval decision.
+
+Let me explain how this works technically. When an interrupt occurs, you receive the tool name and its arguments. Your UI code maps these to visual updates:
+
+For a get documents call with document IDs [47, 52, 63], your left panel highlights these three documents. Your PDF viewer loads the first document and highlights all pages marked as legally significant in the database. The collapsible sidebar shows the page summaries for those significant pages, also highlighted. Now you can see at a glance what the agent is about to receive and decide if it's appropriate.
+
+For a get page text call with document ID 47 and pages [5, 7, 12], the UI highlights document 47, opens the PDF viewer to page 5, and highlights pages 5, 7, and 12 in the sidebar with their summaries. You can quickly review these specific pages to understand what content the agent is requesting.
+
+For write file or edit file operations, the right panel highlights the target file and shows the proposed content. You can review the agent's notes or findings before they're committed to the filesystem.
+
+This context-aware highlighting is crucial for effective oversight. You're not just approving abstract operations - you're making informed decisions based on visual context.
+
+## Building the Web Interface
+
+Your UI design is sophisticated because it needs to coordinate multiple information streams simultaneously. Let me walk through how to think about implementing this.
+
+### Layout Architecture
+
+The interface uses a dynamic three-panel layout that adapts based on user actions. The base layout allocates 20% to the left (data room documents), 60% to the center (agent workflow and todos), and 20% to the right (files). But when a user clicks a document or file, the layout shifts to emphasize the viewer or editor.
+
+When viewing a document, the left panel expands to 40% to show the PDF viewer, the center compresses to maintain workflow visibility, and the right remains at 20%. When editing a file, the right expands to 40% for the editor. This dynamic reallocation keeps the most relevant information prominent while maintaining context about ongoing agent work.
+
+### The Center Panel: Agent Orchestration View
+
+The center panel is where you observe the agent's thinking and decision-making. The top 25% shows the current to-do list from the TodoListMiddleware. As the agent updates its plan, this view refreshes, giving you insight into its analytical strategy.
+
+The remaining 75% shows the agent workflow - essentially a timeline of agent messages, tool calls, and results. When a human approval is required, this is where the approval dialog appears. You see the agent's reasoning for why it wants to call a particular tool, the proposed parameters, and the option to approve, edit, or reject.
+
+This center panel maintains conversation continuity. You can scroll back to see the agent's earlier reasoning, understand how it arrived at current decisions, and track the evolution of its analysis strategy.
+
+### The Left Panel: Document Navigation and Viewing
+
+The left panel starts as a simple list of all documents in your data room, showing their summaries. When you click a document, the panel transforms into a full PDF viewer with sophisticated annotation capabilities.
+
+The PDF viewer needs several key features. You display the actual document pages, allowing natural navigation. A collapsible sidebar shows page summaries - these are the one-line summaries generated during document processing. When the agent calls get documents and pages are marked as legally significant, those pages are highlighted in the main view and their summaries are highlighted in the sidebar. When the agent calls get page text or get page image, the specific requested pages are highlighted.
+
+This visual feedback creates a powerful review mechanism. You immediately see what the agent is looking at, understand why those pages might be significant, and can make informed approval decisions.
+
+### The Right Panel: Filesystem and Report Development
+
+The right panel shows the agent's filesystem workspace. You see files the agent creates as it conducts analysis - perhaps "employment_contract_findings.md" or "risk_assessment_notes.txt." When you click a file, the panel expands to show a full text editor.
+
+The editor needs to be read-only during most of the analysis, because these are the agent's working notes. However, when an approval is pending for a write file or edit file operation, the editor shows a diff view highlighting what the agent wants to change. You can approve the change, edit it before approving, or reject it.
+
+This panel also displays the final report when the Create Report subagent completes its work. The report file becomes the primary artifact of the analysis.
+
+## Implementing the Complete Workflow
+
+Let me walk you through how all these components work together during an actual analysis session.
+
+### Initialization Phase
+
+The user uploads PDF documents to the data room folder. Your background processing pipeline runs, extracting text and images, generating page summaries with Claude Haiku, creating document summaries, identifying legally significant pages, and storing everything in the database. This happens asynchronously before any agent interaction.
+
+Once processing completes, the user accesses the web interface. The left panel displays all documents with their summaries. The center panel shows an input field for the initial analysis request. The right panel shows an empty filesystem workspace.
+
+### Analysis Initiation
+
+The user types a message like "Conduct a comprehensive legal risk analysis of all documents in the data room, focusing on contractual obligations, intellectual property issues, and regulatory compliance risks."
+
+This message, along with all document summaries from the database, is sent to the main Legal Risk Analysis Deep Agent. The agent's Claude Sonnet 4.5 model processes this request and begins reasoning about how to approach the analysis.
+
+### Planning and Delegation
+
+The agent's first action is likely to call the write todos tool to create an analytical plan. This triggers a human approval. The UI shows the proposed to-do list in the center panel - perhaps items like "Review all employment agreements," "Analyze intellectual property assignment clauses," "Assess regulatory compliance across contracts," "Investigate termination and liability provisions," "Synthesize findings into risk report."
+
+You review this plan. If it looks comprehensive, you approve it. If you want to add specific focus areas, you can edit the plan before approving. The approved plan now appears in the top portion of the center panel.
+
+The agent then begins delegating specific analytical tasks. It might call the task tool with: "task(name='Analysis', task='Review all employment agreements for non-compete clauses, restrictive covenants, and potential enforceability issues')." This triggers another approval, showing you the proposed subagent invocation. The center panel displays the task description, and you can approve or modify it.
+
+### Deep Document Analysis
+
+Once approved, the Analysis subagent begins working in isolation. It first calls list documents to see what's available. It identifies employment-related documents and calls get documents with those document IDs.
+
+This triggers an approval. The left panel highlights the relevant employment documents. If you click one, the PDF viewer opens showing the legally significant pages highlighted. You can quickly review what content the subagent will receive - you see the page summaries and can spot-check the text of significant pages. If everything looks appropriate, you approve the request.
+
+The Analysis subagent receives the document data and begins reasoning about the legal implications. It might notice concerning language in a non-compete clause and decide it needs to verify the legal standard in your jurisdiction. It calls web search with a query about non-compete enforceability.
+
+This triggers another approval. The center panel shows the search query, and you can approve it or refine the query if needed. The search results return and the subagent continues its analysis.
+
+The subagent may want to examine specific contract language more carefully. It calls get page text for particular pages. The approval dialog appears, the left panel's PDF viewer highlights those specific pages and shows their summaries, and you can review what specific content is being requested.
+
+As the subagent completes its investigation, it uses the write file tool to document findings. This triggers an approval showing the proposed file content in the right panel. You review the analysis and approve it.
+
+### Iterative Investigation
+
+The main agent receives the completed analysis from the first subagent. It reviews the findings and plans the next investigation - perhaps analyzing intellectual property assignments next. It invokes the Analysis subagent again with a new focused task, and the cycle repeats.
+
+Throughout this process, the center panel's workflow view grows, showing the progression of the analysis. The to-do list updates as tasks are completed. The right panel accumulates analysis files, creating a documented trail of findings.
+
+### Report Generation
+
+After all investigative work completes, the main agent calls the task tool one final time to invoke the Create Report subagent. You approve this, knowing it's the synthesis phase.
+
+The Create Report subagent reads all the analysis files from the filesystem and generates a comprehensive legal risk analysis report. When it calls write file to create the final report, you see the complete document in the approval dialog. You can review the executive summary, risk categorizations, and recommendations before approving.
+
+Once approved, the final report appears in the right panel, and you can download it or review it in detail.
+
+## Technical Implementation Considerations
+
+As you build this system, several technical aspects deserve careful attention.
+
+### Conversation State Management
+
+Your web interface needs to maintain conversation state across multiple agent turns and approvals. When an agent pauses for approval, the conversation state must be preserved exactly. When the user approves, edits, or rejects the action, the conversation resumes from that exact point.
+
+This requires using LangGraph's checkpoint system. Each conversation has a thread ID, and the checkpoint stores the complete agent state - its memory, the pending tool call, the conversation history, everything. Your web interface communicates with the agent runtime through this checkpoint system, saving state when pausing and restoring it when resuming.
+
+### PDF Processing at Scale
+
+If you're processing many large documents, the initial ingestion phase can take significant time. Consider implementing a queue-based system where documents are processed asynchronously. Use a task queue like Celery to manage document processing jobs, updating the database as each document completes. Your web interface can show processing progress and enable analysis once processing is complete.
+
+The page image storage also requires careful consideration. High-resolution page images can consume substantial storage. You might compress images while maintaining readability, or even generate images on-demand from the PDF rather than storing them. However, on-demand generation adds latency to the get page image tool, so pre-generation and storage is often preferable for interactive use.
+
+### Cost and Token Management
+
+Running comprehensive legal analysis with multiple Claude API calls across many documents can accumulate costs. Implement token usage tracking and cost estimation. Show users projected costs before starting an analysis, and track actual consumption during the process.
+
+The limited-use restrictions on get page image and URL content help control costs, but consider also implementing overall token budgets for an analysis session. If an agent is approaching budget limits, you might pause execution and ask the user whether to extend the budget or conclude the analysis.
+
+### Approval Timeout and State Recovery
+
+What happens if the user walks away during an approval? Your system needs timeout handling. After a reasonable period (perhaps 30 minutes), you might save the checkpoint and notify the user that the analysis is paused. They can resume later from exactly where they left off.
+
+You also need to handle browser refreshes gracefully. If the user refreshes their browser during an analysis, the UI should reconnect to the ongoing conversation, restore the visual state, and show any pending approvals.
+
+## Security and Compliance Considerations
+
+Given that you're building a legal analysis system handling potentially sensitive documents, security deserves explicit attention.
+
+### Document Access Control
+
+Implement proper authentication and authorization. Users should only see documents they have permission to access. The MCP document analysis server should verify user permissions before returning document content.
+
+Consider whether different users need different access levels - perhaps some can only view analysis results, while others can conduct full investigations.
+
+### Audit Trails
+
+Maintain comprehensive audit logs of all agent actions and human approvals. Record what documents were accessed, what tools were called, which approvals were granted or denied, and who made each decision. This audit trail is valuable both for understanding the analysis process and for compliance purposes.
+
+### Data Retention and Privacy
+
+Legal documents often contain confidential information. Implement appropriate data retention policies - perhaps automatically purging analysis sessions after a defined period. Ensure that temporary files in the agent's filesystem are properly cleaned up.
+
+If you're using external AI services like Claude, understand their data retention policies and whether they meet your compliance requirements. For highly sensitive analysis, you might need to use Claude's enterprise offerings with specific data handling guarantees.
+
+## Moving Forward
+
+Building this system is a substantial undertaking, but by breaking it into these layers - document processing, agent orchestration, and user interface - you can develop and test each component independently.
+
+Start with the document processing pipeline and database schema. Get that working reliably with a small set of test documents. Then build the MCP server exposing your document analysis tools and test them with simple client scripts. Next, implement the Deep Agent system without the UI, using command-line approvals to verify the workflow. Finally, build the web interface that ties everything together.
+
+Throughout development, remember that the goal is collaborative analysis. The agent provides tireless investigation and pattern recognition, while the human provides judgment, strategic direction, and oversight over sensitive operations. The system succeeds when this collaboration feels natural and effective.
+
+Would you like me to dive deeper into any particular aspect of the implementation, such as the specific MCP server code structure, the agent prompt engineering, or the web interface architecture?
