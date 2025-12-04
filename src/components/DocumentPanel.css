@@ -1,0 +1,307 @@
+/* src/components/DocumentPanel.css */
+/**
+ * Document panel styles.
+ * 
+ * This panel needs to handle two very different visual states - the document
+ * list and the PDF viewer. We use consistent spacing and typography to maintain
+ * visual continuity across these modes.
+ */
+
+.document-panel {
+  height: 100%;
+  background: white;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid #e5e7eb;
+}
+
+/* Document List View */
+.document-list {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.panel-header {
+  padding: 20px;
+  border-bottom: 2px solid #f3f4f6;
+  background: #fafafa;
+}
+
+.panel-header h2 {
+  margin: 0 0 5px 0;
+  font-size: 18px;
+  font-weight: 600;
+  color: #1f2937;
+}
+
+.document-count {
+  font-size: 13px;
+  color: #6b7280;
+  font-weight: 500;
+}
+
+.document-items {
+  flex: 1;
+  overflow-y: auto;
+  padding: 10px;
+}
+
+.document-item {
+  display: flex;
+  gap: 12px;
+  padding: 12px;
+  margin-bottom: 8px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  background: white;
+}
+
+.document-item:hover {
+  border-color: #667eea;
+  box-shadow: 0 2px 8px rgba(102, 126, 234, 0.15);
+  transform: translateY(-1px);
+}
+
+.document-item.highlighted {
+  border-color: #fbbf24;
+  background: #fffbeb;
+  box-shadow: 0 0 0 3px rgba(251, 191, 36, 0.1);
+}
+
+.document-icon {
+  font-size: 24px;
+  flex-shrink: 0;
+}
+
+.document-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.document-name {
+  font-weight: 600;
+  color: #1f2937;
+  margin-bottom: 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.document-summary {
+  font-size: 13px;
+  color: #6b7280;
+  line-height: 1.4;
+  margin-bottom: 6px;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.document-meta {
+  font-size: 12px;
+  color: #9ca3af;
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+.significant-badge {
+  background: #fef3c7;
+  color: #92400e;
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-weight: 500;
+}
+
+/* PDF Viewer Mode */
+.document-viewer {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.viewer-header {
+  padding: 15px 20px;
+  border-bottom: 2px solid #f3f4f6;
+  background: #fafafa;
+  display: flex;
+  align-items: center;
+  gap: 15px;
+}
+
+.back-button {
+  padding: 8px 16px;
+  background: white;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+  color: #374151;
+  transition: all 0.2s ease;
+}
+
+.back-button:hover {
+  background: #f9fafb;
+  border-color: #667eea;
+  color: #667eea;
+}
+
+.viewer-header h3 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: #1f2937;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.viewer-layout {
+  flex: 1;
+  display: flex;
+  overflow: hidden;
+}
+
+/* Collapsible Page Sidebar */
+.page-sidebar {
+  background: #fafafa;
+  border-right: 1px solid #e5e7eb;
+  display: flex;
+  transition: width 0.3s ease;
+  position: relative;
+}
+
+.page-sidebar.expanded {
+  width: 280px;
+}
+
+.page-sidebar.collapsed {
+  width: 30px;
+}
+
+.sidebar-toggle {
+  position: absolute;
+  top: 10px;
+  right: 5px;
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: white;
+  border: 1px solid #d1d5db;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+  color: #6b7280;
+  z-index: 10;
+  transition: all 0.2s ease;
+}
+
+.sidebar-toggle:hover {
+  background: #667eea;
+  color: white;
+  border-color: #667eea;
+}
+
+.page-summaries {
+  flex: 1;
+  padding: 45px 15px 15px 15px;
+  overflow-y: auto;
+}
+
+.page-summaries h4 {
+  margin: 0 0 15px 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: #374151;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.page-summary-item {
+  padding: 10px;
+  margin-bottom: 8px;
+  border-radius: 6px;
+  border-left: 3px solid transparent;
+  background: white;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.page-summary-item:hover {
+  background: #f9fafb;
+  border-left-color: #667eea;
+}
+
+.page-summary-item.highlighted {
+  background: #fffbeb;
+  border-left-color: #fbbf24;
+  box-shadow: 0 0 0 3px rgba(251, 191, 36, 0.1);
+}
+
+.page-summary-item.significant {
+  border-left-color: #10b981;
+}
+
+.page-number {
+  font-size: 12px;
+  font-weight: 600;
+  color: #1f2937;
+  margin-bottom: 4px;
+}
+
+.page-summdesc {
+  font-size: 12px;
+  color: #6b7280;
+  line-height: 1.4;
+}
+
+.pdf-viewer-container {
+  flex: 1;
+  overflow: hidden;
+  background: #525659;
+}
+
+/* Highlight Indicator */
+.highlight-indicator {
+  position: absolute;
+  bottom: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: white;
+  padding: 12px 20px;
+  border-radius: 8px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 14px;
+  color: #1f2937;
+  z-index: 100;
+  border: 2px solid #fbbf24;
+}
+
+.indicator-icon {
+  font-size: 18px;
+}
+
+.indicator-reason {
+  color: #6b7280;
+  font-size: 13px;
+  margin-left: 5px;
+}
+
+.loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: #6b7280;
+  font-size: 14px;
+}
