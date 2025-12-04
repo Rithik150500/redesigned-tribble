@@ -1,0 +1,1251 @@
+### Styling the Application
+
+Now let's bring all these components to life with professional CSS. The styling needs to create a cohesive visual language across all three panels while ensuring the interface remains functional and pleasant to use during long analysis sessions. I'll walk you through the styling philosophy as we build each stylesheet.
+
+```css
+/* src/App.css */
+/**
+ * Main application styles.
+ * 
+ * The design philosophy here is clean, professional, and focused on clarity.
+ * We use a light color scheme with strategic use of color for status indicators
+ * and important actions. The layout is responsive and adapts to different
+ * screen sizes while maintaining the three-panel structure.
+ */
+
+.App {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
+    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  background-color: #f5f5f5;
+}
+
+/* Header with connection status */
+.app-header {
+  height: 60px;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 30px;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+}
+
+.app-header h1 {
+  margin: 0;
+  font-size: 24px;
+  font-weight: 600;
+}
+
+.connection-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  padding: 8px 16px;
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 20px;
+  backdrop-filter: blur(10px);
+}
+
+.status-indicator {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  animation: pulse 2s infinite;
+}
+
+.status-indicator.connected {
+  background-color: #4ade80;
+  box-shadow: 0 0 10px rgba(74, 222, 128, 0.5);
+}
+
+.status-indicator.disconnected {
+  background-color: #f87171;
+  animation: none;
+}
+
+@keyframes pulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
+}
+
+/* Main content area with three panels */
+.app-content {
+  flex: 1;
+  overflow: hidden;
+}
+
+/* Override react-split-pane styles for a cleaner look */
+.Resizer {
+  background: #ddd;
+  opacity: 0.4;
+  z-index: 1;
+  box-sizing: border-box;
+  background-clip: padding-box;
+}
+
+.Resizer:hover {
+  transition: all 0.2s ease;
+  opacity: 0.8;
+}
+
+.Resizer.vertical {
+  width: 6px;
+  margin: 0 -3px;
+  border-left: 3px solid rgba(255, 255, 255, 0);
+  border-right: 3px solid rgba(255, 255, 255, 0);
+  cursor: col-resize;
+}
+
+.Resizer.vertical:hover {
+  border-left: 3px solid rgba(102, 126, 234, 0.5);
+  border-right: 3px solid rgba(102, 126, 234, 0.5);
+}
+```
+
+The main app styling establishes our visual identity. The gradient header creates a professional, modern feel, while the pulsing connection indicator provides immediate status feedback. The resizer styling makes it clear when you can adjust panel sizes, with subtle hover effects that guide interaction.
+
+```css
+/* src/components/DocumentPanel.css */
+/**
+ * Document panel styles.
+ * 
+ * This panel needs to handle two very different visual states - the document
+ * list and the PDF viewer. We use consistent spacing and typography to maintain
+ * visual continuity across these modes.
+ */
+
+.document-panel {
+  height: 100%;
+  background: white;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid #e5e7eb;
+}
+
+/* Document List View */
+.document-list {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.panel-header {
+  padding: 20px;
+  border-bottom: 2px solid #f3f4f6;
+  background: #fafafa;
+}
+
+.panel-header h2 {
+  margin: 0 0 5px 0;
+  font-size: 18px;
+  font-weight: 600;
+  color: #1f2937;
+}
+
+.document-count {
+  font-size: 13px;
+  color: #6b7280;
+  font-weight: 500;
+}
+
+.document-items {
+  flex: 1;
+  overflow-y: auto;
+  padding: 10px;
+}
+
+.document-item {
+  display: flex;
+  gap: 12px;
+  padding: 12px;
+  margin-bottom: 8px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  background: white;
+}
+
+.document-item:hover {
+  border-color: #667eea;
+  box-shadow: 0 2px 8px rgba(102, 126, 234, 0.15);
+  transform: translateY(-1px);
+}
+
+.document-item.highlighted {
+  border-color: #fbbf24;
+  background: #fffbeb;
+  box-shadow: 0 0 0 3px rgba(251, 191, 36, 0.1);
+}
+
+.document-icon {
+  font-size: 24px;
+  flex-shrink: 0;
+}
+
+.document-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.document-name {
+  font-weight: 600;
+  color: #1f2937;
+  margin-bottom: 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.document-summary {
+  font-size: 13px;
+  color: #6b7280;
+  line-height: 1.4;
+  margin-bottom: 6px;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.document-meta {
+  font-size: 12px;
+  color: #9ca3af;
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+.significant-badge {
+  background: #fef3c7;
+  color: #92400e;
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-weight: 500;
+}
+
+/* PDF Viewer Mode */
+.document-viewer {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.viewer-header {
+  padding: 15px 20px;
+  border-bottom: 2px solid #f3f4f6;
+  background: #fafafa;
+  display: flex;
+  align-items: center;
+  gap: 15px;
+}
+
+.back-button {
+  padding: 8px 16px;
+  background: white;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+  color: #374151;
+  transition: all 0.2s ease;
+}
+
+.back-button:hover {
+  background: #f9fafb;
+  border-color: #667eea;
+  color: #667eea;
+}
+
+.viewer-header h3 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: #1f2937;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.viewer-layout {
+  flex: 1;
+  display: flex;
+  overflow: hidden;
+}
+
+/* Collapsible Page Sidebar */
+.page-sidebar {
+  background: #fafafa;
+  border-right: 1px solid #e5e7eb;
+  display: flex;
+  transition: width 0.3s ease;
+  position: relative;
+}
+
+.page-sidebar.expanded {
+  width: 280px;
+}
+
+.page-sidebar.collapsed {
+  width: 30px;
+}
+
+.sidebar-toggle {
+  position: absolute;
+  top: 10px;
+  right: 5px;
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: white;
+  border: 1px solid #d1d5db;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+  color: #6b7280;
+  z-index: 10;
+  transition: all 0.2s ease;
+}
+
+.sidebar-toggle:hover {
+  background: #667eea;
+  color: white;
+  border-color: #667eea;
+}
+
+.page-summaries {
+  flex: 1;
+  padding: 45px 15px 15px 15px;
+  overflow-y: auto;
+}
+
+.page-summaries h4 {
+  margin: 0 0 15px 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: #374151;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.page-summary-item {
+  padding: 10px;
+  margin-bottom: 8px;
+  border-radius: 6px;
+  border-left: 3px solid transparent;
+  background: white;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.page-summary-item:hover {
+  background: #f9fafb;
+  border-left-color: #667eea;
+}
+
+.page-summary-item.highlighted {
+  background: #fffbeb;
+  border-left-color: #fbbf24;
+  box-shadow: 0 0 0 3px rgba(251, 191, 36, 0.1);
+}
+
+.page-summary-item.significant {
+  border-left-color: #10b981;
+}
+
+.page-number {
+  font-size: 12px;
+  font-weight: 600;
+  color: #1f2937;
+  margin-bottom: 4px;
+}
+
+.page-summdesc {
+  font-size: 12px;
+  color: #6b7280;
+  line-height: 1.4;
+}
+
+.pdf-viewer-container {
+  flex: 1;
+  overflow: hidden;
+  background: #525659;
+}
+
+/* Highlight Indicator */
+.highlight-indicator {
+  position: absolute;
+  bottom: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: white;
+  padding: 12px 20px;
+  border-radius: 8px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 14px;
+  color: #1f2937;
+  z-index: 100;
+  border: 2px solid #fbbf24;
+}
+
+.indicator-icon {
+  font-size: 18px;
+}
+
+.indicator-reason {
+  color: #6b7280;
+  font-size: 13px;
+  margin-left: 5px;
+}
+
+.loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: #6b7280;
+  font-size: 14px;
+}
+```
+
+The document panel styling creates a clear visual hierarchy. In list mode, documents are presented as scannable cards with hover effects that make interaction intuitive. The highlighted state uses a warm yellow that draws attention without being aggressive. In viewer mode, the collapsible sidebar uses smooth transitions to expand and collapse, maintaining a polished feel throughout the interaction.
+
+```css
+/* src/components/WorkflowPanel.css */
+/**
+ * Workflow panel styles.
+ * 
+ * This is the most complex panel visually because it needs to handle multiple
+ * states: input form, message timeline, to-do list, and approval dialogs.
+ * We use careful spacing and color choices to keep everything readable even
+ * when the timeline gets long.
+ */
+
+.workflow-panel {
+  height: 100%;
+  background: white;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* Analysis Input Form */
+.analysis-input-container {
+  padding: 40px;
+  max-width: 700px;
+  margin: 0 auto;
+}
+
+.analysis-input-container h2 {
+  margin: 0 0 10px 0;
+  font-size: 28px;
+  font-weight: 700;
+  color: #1f2937;
+}
+
+.input-description {
+  color: #6b7280;
+  font-size: 15px;
+  line-height: 1.6;
+  margin-bottom: 25px;
+}
+
+.analysis-input {
+  width: 100%;
+  padding: 15px;
+  border: 2px solid #e5e7eb;
+  border-radius: 8px;
+  font-size: 15px;
+  font-family: inherit;
+  resize: vertical;
+  transition: all 0.2s ease;
+  margin-bottom: 20px;
+}
+
+.analysis-input:focus {
+  outline: none;
+  border-color: #667eea;
+  box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+}
+
+.analysis-input::placeholder {
+  color: #9ca3af;
+}
+
+.start-button {
+  width: 100%;
+  padding: 15px;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+  border: none;
+  border-radius: 8px;
+  font-size: 16px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  box-shadow: 0 4px 12px rgba(102, 126, 234, 0.3);
+}
+
+.start-button:hover:not(:disabled) {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 20px rgba(102, 126, 234, 0.4);
+}
+
+.start-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.example-queries {
+  margin-top: 30px;
+  padding: 20px;
+  background: #f9fafb;
+  border-radius: 8px;
+  border: 1px solid #e5e7eb;
+}
+
+.example-queries h4 {
+  margin: 0 0 15px 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: #374151;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.example-item {
+  padding: 12px;
+  margin-bottom: 8px;
+  background: white;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+  color: #4b5563;
+  transition: all 0.2s ease;
+}
+
+.example-item:hover {
+  border-color: #667eea;
+  background: #f0f4ff;
+  color: #667eea;
+}
+
+/* Active Workflow View */
+.workflow-content {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+/* To-Do List Section */
+.todo-section {
+  background: #fafafa;
+  border-bottom: 2px solid #e5e7eb;
+}
+
+.todo-header {
+  padding: 15px 20px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  cursor: pointer;
+  user-select: none;
+}
+
+.todo-header:hover {
+  background: #f3f4f6;
+}
+
+.todo-header h3 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: #1f2937;
+}
+
+.toggle-icon {
+  color: #9ca3af;
+  font-size: 12px;
+}
+
+.todo-list {
+  padding: 15px 20px 20px 20px;
+}
+
+.todo-item {
+  display: flex;
+  gap: 12px;
+  padding: 10px;
+  margin-bottom: 8px;
+  background: white;
+  border-radius: 6px;
+  border-left: 3px solid transparent;
+  transition: all 0.2s ease;
+}
+
+.todo-item.pending {
+  border-left-color: #9ca3af;
+}
+
+.todo-item.complete {
+  border-left-color: #10b981;
+  opacity: 0.7;
+}
+
+.todo-checkbox {
+  font-size: 18px;
+  color: #9ca3af;
+}
+
+.todo-item.complete .todo-checkbox {
+  color: #10b981;
+}
+
+.todo-text {
+  flex: 1;
+  font-size: 14px;
+  color: #374151;
+  line-height: 1.5;
+}
+
+.todo-item.complete .todo-text {
+  text-decoration: line-through;
+}
+
+/* Message Timeline */
+.message-timeline {
+  flex: 1;
+  overflow-y: auto;
+  padding: 20px;
+}
+
+.message {
+  margin-bottom: 20px;
+  padding: 15px;
+  border-radius: 8px;
+  border-left: 3px solid transparent;
+  background: white;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+.message-system {
+  border-left-color: #667eea;
+  background: #f0f4ff;
+}
+
+.message-agent {
+  border-left-color: #10b981;
+  background: #f0fdf4;
+}
+
+.message-user {
+  border-left-color: #6366f1;
+  background: #eef2ff;
+}
+
+.message-error {
+  border-left-color: #ef4444;
+  background: #fef2f2;
+}
+
+.message-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.message-icon {
+  font-size: 16px;
+}
+
+.message-timestamp {
+  font-size: 12px;
+  color: #6b7280;
+  font-weight: 500;
+}
+
+.message-content {
+  font-size: 14px;
+  color: #1f2937;
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+
+/* Approval Dialog */
+.approval-dialog {
+  background: white;
+  border: 2px solid #fbbf24;
+  border-radius: 12px;
+  padding: 25px;
+  margin: 20px;
+  box-shadow: 0 8px 30px rgba(251, 191, 36, 0.2);
+}
+
+.approval-header {
+  margin-bottom: 20px;
+  padding-bottom: 15px;
+  border-bottom: 2px solid #fef3c7;
+}
+
+.approval-header h3 {
+  margin: 0 0 8px 0;
+  font-size: 20px;
+  font-weight: 700;
+  color: #92400e;
+}
+
+.approval-count {
+  font-size: 14px;
+  color: #92400e;
+  font-weight: 500;
+}
+
+.agent-reasoning {
+  background: #f9fafb;
+  padding: 15px;
+  border-radius: 8px;
+  margin-bottom: 20px;
+  border-left: 3px solid #667eea;
+}
+
+.agent-reasoning h4 {
+  margin: 0 0 10px 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: #374151;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.reasoning-content {
+  font-size: 14px;
+  color: #4b5563;
+  line-height: 1.6;
+}
+
+.approval-actions {
+  margin-bottom: 20px;
+}
+
+.approval-action {
+  background: #fafafa;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  padding: 20px;
+  margin-bottom: 15px;
+}
+
+.action-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 15px;
+  padding-bottom: 15px;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.action-header h4 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: #1f2937;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.action-number {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  background: #667eea;
+  color: white;
+  border-radius: 50%;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.action-allowed-decisions {
+  font-size: 12px;
+  color: #6b7280;
+  font-weight: 500;
+  padding: 4px 10px;
+  background: white;
+  border-radius: 12px;
+}
+
+.action-arguments {
+  margin-bottom: 15px;
+}
+
+.action-arguments h5 {
+  margin: 0 0 10px 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: #374151;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.action-arguments pre {
+  background: white;
+  padding: 12px;
+  border-radius: 6px;
+  border: 1px solid #e5e7eb;
+  font-size: 13px;
+  color: #374151;
+  overflow-x: auto;
+  margin: 0;
+}
+
+.edit-arguments {
+  width: 100%;
+  padding: 12px;
+  border: 2px solid #667eea;
+  border-radius: 6px;
+  font-family: 'Courier New', monospace;
+  font-size: 13px;
+  resize: vertical;
+}
+
+.context-details {
+  background: white;
+  padding: 15px;
+  border-radius: 6px;
+  border: 1px solid #e5e7eb;
+  margin-bottom: 15px;
+}
+
+.context-details h5 {
+  margin: 0 0 12px 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: #374151;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.context-document {
+  background: #f9fafb;
+  padding: 12px;
+  border-radius: 6px;
+  margin-bottom: 10px;
+}
+
+.doc-name {
+  font-weight: 600;
+  color: #1f2937;
+  margin-bottom: 6px;
+}
+
+.doc-summary {
+  font-size: 13px;
+  color: #6b7280;
+  margin-bottom: 8px;
+  line-height: 1.5;
+}
+
+.significant-pages {
+  font-size: 12px;
+  color: #92400e;
+  background: #fef3c7;
+  padding: 6px 10px;
+  border-radius: 4px;
+  display: inline-block;
+}
+
+.page-summaries-preview {
+  margin-top: 10px;
+  font-size: 13px;
+}
+
+.page-summaries-preview strong {
+  color: #374151;
+  display: block;
+  margin-bottom: 8px;
+}
+
+.page-summaries-preview ul {
+  margin: 0;
+  padding-left: 20px;
+}
+
+.page-summaries-preview li {
+  color: #6b7280;
+  line-height: 1.6;
+  margin-bottom: 4px;
+}
+
+.file-preview pre {
+  background: #1f2937;
+  color: #f9fafb;
+  padding: 15px;
+  border-radius: 6px;
+  font-size: 13px;
+  overflow-x: auto;
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.todo-preview {
+  margin: 0;
+  padding-left: 25px;
+}
+
+.todo-preview li {
+  color: #374151;
+  line-height: 1.8;
+  margin-bottom: 8px;
+}
+
+.action-buttons {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.action-buttons button {
+  padding: 10px 20px;
+  border: none;
+  border-radius: 6px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.approve-button {
+  background: #10b981;
+  color: white;
+}
+
+.approve-button:hover {
+  background: #059669;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(16, 185, 129, 0.3);
+}
+
+.edit-button {
+  background: #667eea;
+  color: white;
+}
+
+.edit-button:hover {
+  background: #5568d3;
+  transform: translateY(-1px);
+}
+
+.reject-button {
+  background: #ef4444;
+  color: white;
+}
+
+.reject-button:hover {
+  background: #dc2626;
+  transform: translateY(-1px);
+}
+
+.save-edit-button {
+  background: #10b981;
+  color: white;
+}
+
+.cancel-edit-button {
+  background: #6b7280;
+  color: white;
+}
+
+.approval-buttons {
+  display: flex;
+  gap: 12px;
+  padding-top: 15px;
+  border-top: 2px solid #fef3c7;
+}
+
+.approve-all-button,
+.reject-all-button {
+  flex: 1;
+  padding: 14px;
+  border: none;
+  border-radius: 8px;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.approve-all-button {
+  background: #10b981;
+  color: white;
+}
+
+.approve-all-button:hover {
+  background: #059669;
+  transform: translateY(-2px);
+  box-shadow: 0 6px 20px rgba(16, 185, 129, 0.3);
+}
+
+.reject-all-button {
+  background: #ef4444;
+  color: white;
+}
+
+.reject-all-button:hover {
+  background: #dc2626;
+  transform: translateY(-2px);
+  box-shadow: 0 6px 20px rgba(239, 68, 68, 0.3);
+}
+```
+
+The workflow panel styling creates a clear visual hierarchy between different message types and states. The approval dialog uses warm warning colors that draw attention without being alarming. The button styling provides clear affordances for interaction, with hover states that make actions feel responsive and intentional.
+
+Now let me complete the styling with the file panel CSS and then provide integration instructions to tie everything together...
+
+```css
+/* src/components/FilePanel.css */
+/**
+ * File panel styles.
+ * 
+ * This panel needs to feel like a familiar file browser while integrating
+ * smoothly with our overall design language. We use subtle indentation and
+ * hover states to make the tree structure intuitive.
+ */
+
+.file-panel {
+  height: 100%;
+  background: white;
+  display: flex;
+  flex-direction: column;
+  border-left: 1px solid #e5e7eb;
+}
+
+.file-browser {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.approval-indicator {
+  background: #fffbeb;
+  border: 1px solid #fbbf24;
+  color: #92400e;
+  padding: 12px 20px;
+  font-size: 13px;
+  font-weight: 600;
+  text-align: center;
+}
+
+.file-tree {
+  flex: 1;
+  overflow-y: auto;
+  padding: 10px;
+}
+
+.empty-state {
+  padding: 60px 30px;
+  text-align: center;
+  color: #9ca3af;
+}
+
+.empty-state p {
+  margin: 10px 0;
+  font-size: 14px;
+}
+
+.empty-hint {
+  font-size: 13px;
+  color: #d1d5db;
+}
+
+.directory-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  cursor: pointer;
+  border-radius: 6px;
+  transition: all 0.2s ease;
+  user-select: none;
+}
+
+.directory-item:hover {
+  background: #f9fafb;
+}
+
+.expand-icon {
+  font-size: 10px;
+  color: #9ca3af;
+  width: 12px;
+  flex-shrink: 0;
+}
+
+.directory-icon {
+  font-size: 16px;
+  flex-shrink: 0;
+}
+
+.directory-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: #374151;
+}
+
+.file-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  cursor: pointer;
+  border-radius: 6px;
+  transition: all 0.2s ease;
+  border-left: 3px solid transparent;
+}
+
+.file-item:hover {
+  background: #f9fafb;
+}
+
+.file-item.selected {
+  background: #f0f4ff;
+  border-left-color: #667eea;
+}
+
+.file-item.highlighted {
+  background: #fffbeb;
+  border-left-color: #fbbf24;
+  box-shadow: 0 0 0 3px rgba(251, 191, 36, 0.1);
+}
+
+.file-icon {
+  font-size: 16px;
+  flex-shrink: 0;
+}
+
+.file-name {
+  flex: 1;
+  font-size: 14px;
+  color: #374151;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-size {
+  font-size: 11px;
+  color: #9ca3af;
+  flex-shrink: 0;
+}
+
+/* File Viewer */
+.file-viewer {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.editor-container {
+  flex: 1;
+  overflow: hidden;
+}
+```
+
+### Integration and Deployment
+
+Now that we have all the components built, let me walk you through how to integrate everything and get the system running. This is where all the pieces come together into a working application.
+
+**Package Installation**
+
+First, ensure all dependencies are properly installed. Create a `package.json` in your frontend directory with these dependencies:
+
+```json
+{
+  "name": "legal-analysis-frontend",
+  "version": "1.0.0",
+  "dependencies": {
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "@react-pdf-viewer/core": "^3.12.0",
+    "@react-pdf-viewer/default-layout": "^3.12.0",
+    "@monaco-editor/react": "^4.6.0",
+    "pdfjs-dist": "^3.4.120",
+    "react-split-pane": "^0.1.92"
+  },
+  "scripts": {
+    "start": "react-scripts start",
+    "build": "react-scripts build",
+    "test": "react-scripts test"
+  }
+}
+```
+
+**Backend Integration Points**
+
+Your frontend needs to communicate with the FastAPI backend at several key points. Make sure your backend is running on `http://localhost:8000` and has these endpoints properly implemented as we discussed earlier in the conversation:
+
+The REST endpoints provide initial data loading - fetching document lists, document details, PDF files, and page images. The WebSocket endpoint at `/ws/{session_id}` handles all real-time bidirectional communication during analysis. The session management endpoints create and destroy analysis sessions.
+
+**Starting the Complete System**
+
+To run the full system, you need to start components in the right order. First, ensure your document processing has completed and your database is populated with document summaries and page data. Second, start the MCP server that provides document analysis tools - this runs as a subprocess managed by your backend. Third, start the FastAPI backend server which manages agent sessions and WebSocket connections. Finally, start the React development server for the frontend interface.
+
+The startup sequence might look like this in your terminal:
+
+```bash
+# Terminal 1: Ensure documents are processed
+python ingest_documents.py
+
+# Terminal 2: Start the backend server (which will spawn MCP server as subprocess)
+python web_server.py
+
+# Terminal 3: Start the frontend development server
+cd frontend
+npm start
+```
+
+**Testing the Integration**
+
+Once everything is running, open your browser to `http://localhost:3000`. You should see the three-panel layout with your processed documents in the left panel. The connection status indicator in the header should show "Connected" with a green pulsing dot.
+
+Try starting a simple analysis to verify the complete workflow. Type a request like "Review all documents and identify key contractual obligations." Watch as the agent creates its plan (requiring your approval), then begins delegating to subagents (each requiring approval). As the agent requests documents, you'll see the left panel highlight relevant documents. As it writes findings, you'll see files appear in the right panel.
+
+This end-to-end test verifies that your WebSocket communication is working, that approval context is being properly enriched with document metadata, that the UI is correctly highlighting based on agent actions, and that the complete analysis workflow functions as designed.
+
+**Common Integration Issues**
+
+Several common issues can arise during integration, and knowing what to look for will save you debugging time. If the WebSocket connection fails, check that your backend is properly configured for CORS and that the session ID is correctly passed from the REST API to the WebSocket connection. If document highlighting doesn't work, verify that your backend's `build_approval_context` function is properly querying the database and including the right metadata in the context object. If PDF viewing fails, ensure that the pdf.js worker URL is correctly configured and that your backend's PDF serving endpoint sets the right content type headers.
+
+**Production Considerations**
+
+When you're ready to deploy this system to production, several aspects need careful attention. For authentication, implement proper user authentication and authorization - you'll want to ensure users can only access their own analysis sessions and documents. Consider using JWT tokens for session management and integrating with your organization's SSO if appropriate.
+
+For scalability, the current architecture runs the agent runtime in the same process as your web server. For production, you might want to separate these concerns - perhaps running agent sessions in separate worker processes or even separate containers. This allows you to scale the compute-intensive agent work independently from your web serving capacity.
+
+For cost management, implement token usage tracking and budgets. Each analysis session should have a maximum token budget, and you should track usage in real-time. Alert users when they're approaching limits and give them the option to extend budgets or conclude analysis early.
+
+For security, ensure all document access goes through proper authorization checks. Audit log every agent action and human approval decision. Consider implementing data retention policies that automatically purge old analysis sessions and their associated temporary files after a defined period.
+
+This legal risk analysis system represents a sophisticated application of Deep Agents combined with careful UI design to create a truly collaborative AI tool. The agent provides tireless investigation and pattern recognition across potentially hundreds of pages of legal documents. You provide judgment, strategic direction, and oversight at critical decision points. The result is analysis that's both more comprehensive than a human could produce alone and more reliable than a fully autonomous system.
+
+The architecture we've built - with document processing creating rich pre-indexed data, MCP servers providing controlled document access, Deep Agents orchestrating hierarchical analysis, and a responsive web interface providing visual context for approvals - creates a system where human and AI capabilities complement each other naturally. As you use the system and observe how the agent works, you'll develop intuition for when to guide its investigation and when to let it explore independently. This collaborative dynamic is what makes human-in-the-loop AI systems so powerful for complex analytical work.
