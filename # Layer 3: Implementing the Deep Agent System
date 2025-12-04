@@ -1,0 +1,1246 @@
+# Layer 3: Implementing the Deep Agent System
+
+Now we're ready to build the intelligence layer - the Deep Agent system that orchestrates the legal analysis. This is where everything comes together. Your document processing pipeline has created structured data, your MCP server exposes that data as tools, and now we need agents that can strategically use those tools to conduct comprehensive legal analysis.
+
+Think of this layer as assembling a team of specialized legal analysts. The main agent is like a senior partner who develops the overall strategy and delegates specific investigations to junior analysts. Each subagent is like a specialist who dives deep into their assigned area, then reports back with findings. The system maintains human oversight at critical decision points, ensuring the analysis stays on track and covers what matters most.
+
+Let me walk you through building this system step by step, and I'll explain not just what we're building, but why each design decision matters for creating an effective collaborative analysis tool.
+
+## Understanding the Agent Architecture
+
+Before we write code, let's understand the three agents we're building and how they interact. The main Legal Risk Analysis agent acts as the strategic coordinator. It receives the initial analysis request, formulates a plan, and delegates specific investigations to subagents. It never gets bogged down in detailed document reading - instead, it maintains the high-level view and orchestrates the workflow.
+
+The Analysis subagent is where deep investigation happens. When delegated a specific task like "analyze employment agreements for non-compete clauses," this agent accesses documents through the MCP server tools, conducts detailed examination, performs web research when needed, and documents findings in the filesystem. Each Analysis subagent invocation works in complete isolation, so the main agent's context stays clean.
+
+The Create Report subagent has a singular purpose: synthesizing all findings into a polished deliverable. It reads the analysis files that accumulated during investigation and produces a comprehensive risk analysis report. By constraining this to a single use, we enforce proper workflow - the main agent must complete all investigation before generating the report.
+
+## Setting Up the Project Structure
+
+Let's create the file structure for our Deep Agent system. We'll organize this as a standalone module that can be run independently before adding a web interface.
+
+```python
+# agents/__init__.py
+"""
+Legal Risk Analysis Deep Agent System
+
+This module implements a hierarchical agent system for analyzing legal documents.
+The system consists of:
+- Main agent: Strategic coordinator and planner
+- Analysis subagent: Deep document investigation and research
+- Report subagent: Synthesis and report generation
+"""
+
+from .main_agent import create_legal_risk_agent
+from .analysis_subagent import create_analysis_subagent
+from .report_subagent import create_report_subagent
+
+__all__ = [
+    'create_legal_risk_agent',
+    'create_analysis_subagent', 
+    'create_report_subagent'
+]
+```
+
+## Building the Main Legal Risk Analysis Agent
+
+Let's start with the main agent. This is the most complex piece because it needs to coordinate everything - planning, delegation, and synthesis.
+
+```python
+# agents/main_agent.py
+"""
+Main Legal Risk Analysis Agent
+
+This agent serves as the strategic coordinator for legal document analysis.
+It develops analysis plans, delegates investigations to subagents, and ensures
+comprehensive coverage of all legal risks.
+"""
+
+from deepagents import create_deep_agent
+from deepagents.backends import CompositeBackend, StateBackend, StoreBackend
+from langgraph.checkpoint.memory import MemorySaver
+from langgraph.store.memory import InMemoryStore
+import anthropic
+import os
+
+# System prompt for the main agent
+# This is crucial - it defines the agent's role, capabilities, and approach
+MAIN_AGENT_SYSTEM_PROMPT = """You are a Legal Risk Analysis Expert coordinating a comprehensive review of company legal documents.
+
+YOUR ROLE:
+You are the senior legal analyst responsible for developing and executing a strategic plan to identify all legal risks, obligations, and areas of concern in the company's legal documents. You coordinate the analysis but delegate detailed investigation to specialized subagents.
+
+AVAILABLE SUBAGENTS:
+1. Analysis Subagent (unlimited use):
+   - Use for deep investigation of specific document types or legal issues
+   - Examples: "Analyze all employment agreements for restrictive covenants"
+              "Review intellectual property assignments across all contracts"
+   - This subagent has access to document analysis tools and web research
+   - Each invocation works in isolation and returns a summary of findings
+
+2. Create Report Subagent (ONE TIME USE ONLY):
+   - Use ONLY when all analysis is complete
+   - This subagent synthesizes all findings into a final report
+   - Once called, you cannot call it again - ensure analysis is thorough first
+
+YOUR WORKFLOW:
+1. First, use write_todos to create a comprehensive analysis plan based on the document summaries provided
+2. Break down the analysis into logical investigations (e.g., by document type, by legal issue)
+3. Delegate each investigation to the Analysis subagent using the task() tool
+4. As findings come back, review them and adjust your plan if needed
+5. Keep notes in the filesystem about patterns, risks, and areas needing attention
+6. Only when ALL investigations are complete, call the Create Report subagent ONCE
+
+PLANNING CONSIDERATIONS:
+- Consider document types: employment agreements, vendor contracts, IP licenses, etc.
+- Consider legal issues: obligations, termination clauses, liability, IP rights, compliance
+- Consider cross-cutting risks that appear across multiple documents
+- Think about what legal research might be needed (case law, regulations, standards)
+
+DELEGATION STRATEGY:
+- Make each Analysis subagent task focused and specific
+- Provide clear objectives: what to look for, what questions to answer
+- Don't overlap investigations - each should cover distinct ground
+- Wait for results before delegating the next task if they're sequential
+
+FILESYSTEM USAGE:
+- Use /analysis/ for findings from each investigation
+- Use /notes/ for your coordination notes and risk summaries
+- The filesystem persists across your entire analysis session
+- The Report subagent will read all files you create
+
+CRITICAL RULES:
+- Do NOT try to read documents directly - always use Analysis subagent
+- Do NOT create the report yourself - always use Create Report subagent
+- Do NOT call Create Report subagent until all investigations are complete
+- DO maintain a clear plan and track progress systematically
+
+Remember: You are the strategist and coordinator. Your job is to ensure nothing is missed and all findings are properly synthesized, not to do the detailed work yourself."""
+
+
+def create_legal_risk_agent(
+    anthropic_api_key: str = None,
+    mcp_server_path: str = "./legal_doc_mcp_server.py",
+    checkpointer = None,
+    store = None
+):
+    """
+    Create the main Legal Risk Analysis agent.
+    
+    This agent coordinates the entire analysis process, delegating detailed
+    work to subagents while maintaining strategic oversight.
+    
+    Args:
+        anthropic_api_key: API key for Claude (defaults to env var)
+        mcp_server_path: Path to the MCP server script
+        checkpointer: LangGraph checkpointer for state persistence
+        store: LangGraph store for cross-thread memory
+    
+    Returns:
+        Configured Deep Agent ready to conduct legal analysis
+    """
+    
+    # Use environment variable if API key not provided
+    if anthropic_api_key is None:
+        anthropic_api_key = os.getenv("ANTHROPIC_API_KEY")
+        if not anthropic_api_key:
+            raise ValueError("ANTHROPIC_API_KEY must be provided or set in environment")
+    
+    # Create checkpointer if not provided
+    # This is required for human-in-the-loop functionality
+    if checkpointer is None:
+        checkpointer = MemorySaver()
+    
+    # Create store if not provided
+    # This enables persistent memory across analysis sessions
+    if store is None:
+        store = InMemoryStore()
+    
+    # Import subagent creators
+    from .analysis_subagent import create_analysis_subagent
+    from .report_subagent import create_report_subagent
+    
+    # Configure the filesystem backend
+    # We use a CompositeBackend to route /memories/ to persistent storage
+    # while keeping working files ephemeral
+    def create_backend(runtime):
+        return CompositeBackend(
+            default=StateBackend(runtime),  # Ephemeral working files
+            routes={
+                "/memories/": StoreBackend(runtime)  # Persistent memories
+            }
+        )
+    
+    # Define the Analysis subagent configuration
+    # This subagent can be called unlimited times for different investigations
+    analysis_subagent_config = {
+        "name": "Analysis",
+        "description": """Use this subagent for detailed investigation of specific legal issues or document types.
+        
+Examples of when to use:
+- "Analyze all employment agreements for non-compete and confidentiality clauses"
+- "Review vendor contracts for liability and indemnification provisions"  
+- "Examine intellectual property assignment clauses across all agreements"
+- "Investigate termination conditions and notice requirements"
+
+This subagent has access to document analysis tools and web research capabilities.
+It will conduct a thorough investigation and return a summary of findings.""",
+        
+        "system_prompt": """You are a specialized legal analyst conducting detailed document investigation.
+
+You have been assigned a specific legal analysis task. Your job is to:
+1. Use list_documents to see what's available
+2. Identify relevant documents based on your assignment
+3. Use get_documents to access document content (this includes page summaries and legally significant pages)
+4. Use get_page_text for additional pages if needed
+5. Use get_page_image sparingly - only when visual layout is critical
+6. Use web_search to research legal standards, precedents, or regulations
+7. Document your findings clearly in files
+
+IMPORTANT GUIDELINES:
+- Be thorough but focused on your assigned task
+- Look for risks, obligations, deadlines, and problematic clauses
+- Compare provisions across documents to identify patterns
+- Research legal standards when you find questionable provisions
+- Document specific page numbers and quote key language
+- Write your findings in clear, organized files
+
+Your findings will be used by the main agent to create the final report.""",
+        
+        "tools": [],  # We'll add MCP tools dynamically
+        "model": "claude-sonnet-4-5-20250929",
+    }
+    
+    # Define the Create Report subagent configuration
+    # This subagent can only be called ONCE - use it wisely
+    report_subagent_config = {
+        "name": "CreateReport",
+        "description": """Use this subagent ONCE when all analysis is complete to generate the final report.
+
+This subagent will:
+- Read all analysis findings from the filesystem
+- Synthesize findings into a comprehensive report
+- Structure the report with executive summary, detailed findings, and recommendations
+- Format the report professionally for executive review
+
+WARNING: This can only be used ONE TIME. Do not call this until you have completed all investigations and are certain you have comprehensive findings.""",
+        
+        "system_prompt": """You are a legal report writer creating a comprehensive Legal Risk Analysis Report.
+
+Your task is to synthesize all analysis findings into a polished, professional report suitable for executive review.
+
+AVAILABLE INFORMATION:
+- All analysis findings are stored in the filesystem under /analysis/
+- Coordination notes from the main agent may be in /notes/
+- Read all files to understand the complete picture
+
+REPORT STRUCTURE:
+1. Executive Summary (2-3 paragraphs)
+   - High-level overview of documents analyzed
+   - Key risks and concerns identified
+   - Critical action items
+
+2. Risk Categories (organize by type)
+   - Contractual Obligations and Deadlines
+   - Liability and Indemnification Concerns  
+   - Intellectual Property Issues
+   - Regulatory Compliance Risks
+   - Termination and Dispute Resolution
+   - Other Material Concerns
+   
+   For each risk:
+   - Description of the issue
+   - Specific documents/pages affected
+   - Severity assessment (High/Medium/Low)
+   - Potential impact
+   - Recommended action
+
+3. Document-Specific Findings
+   - Summary for each major document reviewed
+   - Key provisions and concerns
+   - Cross-references to risk categories
+
+4. Recommendations
+   - Priority actions required
+   - Areas needing further legal review
+   - Policy or process improvements
+
+FORMATTING:
+- Use clear headers and sections
+- Use bullet points for readability
+- Include specific page references
+- Use professional, clear language
+- Be concise but comprehensive
+
+Write the complete report to /report/legal_risk_analysis_report.md""",
+        
+        "model": "claude-sonnet-4-5-20250929",
+        "middleware": []  # Only needs filesystem access
+    }
+    
+    # Configure human-in-the-loop interrupts
+    # These tools will pause execution for human approval
+    interrupt_config = {
+        "write_todos": True,  # Approve the analysis plan
+        "task": True,  # Approve subagent delegations
+        "write_file": True,  # Review files being created
+        "edit_file": True,  # Review file modifications
+    }
+    
+    # Create the main agent
+    # This brings together all the components we've configured
+    agent = create_deep_agent(
+        model="claude-sonnet-4-5-20250929",
+        system_prompt=MAIN_AGENT_SYSTEM_PROMPT,
+        backend=create_backend,
+        checkpointer=checkpointer,
+        store=store,
+        subagents=[analysis_subagent_config, report_subagent_config],
+        interrupt_on=interrupt_config
+    )
+    
+    return agent
+
+
+def format_document_summaries_for_prompt(db):
+    """
+    Format all document summaries for inclusion in the initial prompt.
+    
+    This gives the main agent a complete overview of available documents
+    so it can formulate an effective analysis strategy.
+    """
+    from database import LegalDocumentDatabase
+    
+    if isinstance(db, str):
+        db = LegalDocumentDatabase(db)
+    
+    documents = db.get_all_documents()
+    
+    if not documents:
+        return "No documents found in the data room."
+    
+    summary_lines = [
+        "=== LEGAL DOCUMENTS DATA ROOM ===",
+        f"\nTotal Documents: {len(documents)}\n",
+        "Document Summaries:\n"
+    ]
+    
+    for doc in documents:
+        summary_lines.extend([
+            f"Document {doc['doc_id']}: {doc['filename']}",
+            f"  Summary: {doc['summdesc']}",
+            f"  Pages: {doc['total_pages']} total, {doc['legally_significant_pages']} legally significant",
+            ""
+        ])
+    
+    return "\n".join(summary_lines)
+```
+
+Now let me explain the key design decisions in this main agent. The system prompt is extensive and detailed because it defines the agent's entire operating model. Notice how it explicitly tells the agent what tools it has, when to use them, and what workflow to follow. This level of specificity helps the agent make good decisions consistently.
+
+The interrupt configuration is strategic. We require approval for write todos because the analysis plan is foundational - we want to review it before the agent proceeds. We require approval for task calls because each subagent invocation consumes resources and shapes the analysis, so we want oversight over what gets investigated. We require approval for file operations because these document findings and we want visibility into what the agent is discovering.
+
+The backend configuration uses a CompositeBackend to enable both ephemeral and persistent storage. Working files stay in ephemeral state, but anything the agent writes to the memories directory persists across sessions. This lets agents build up knowledge over multiple analysis sessions if needed.
+
+## Building the Analysis Subagent
+
+Now let's create the Analysis subagent, which does the detailed investigative work.
+
+```python
+# agents/analysis_subagent.py
+"""
+Analysis Subagent for Deep Document Investigation
+
+This subagent receives focused assignments from the main agent and conducts
+detailed investigation of specific legal issues or document types.
+"""
+
+from deepagents import create_deep_agent
+from deepagents.backends import StateBackend
+import anthropic
+import os
+
+# System prompt for Analysis subagent
+ANALYSIS_SUBAGENT_PROMPT = """You are a specialized legal analyst conducting detailed document investigation.
+
+CURRENT ASSIGNMENT:
+{assignment}
+
+YOUR APPROACH:
+1. Start with list_documents to understand what's available
+2. Identify documents relevant to your assignment based on their summaries
+3. Use get_documents to retrieve relevant documents
+   - This gives you page summaries (document structure) 
+   - Plus full text of legally significant pages automatically
+4. Analyze the content carefully for your assigned focus
+5. Use get_page_text if you need additional pages beyond those marked significant
+6. Use get_page_image SPARINGLY - only when visual layout is critical
+7. Use web_search to research legal standards or precedents
+8. Document your findings in organized files
+
+WHAT TO LOOK FOR:
+- Specific obligations and duties
+- Deadlines and time-sensitive provisions
+- Financial terms and payment obligations
+- Liability clauses and indemnification
+- Termination conditions and consequences
+- Intellectual property provisions
+- Non-compete and confidentiality requirements
+- Regulatory compliance requirements
+- Dispute resolution mechanisms
+- Material representations and warranties
+- Unusual or problematic clauses
+- Inconsistencies across documents
+
+ANALYSIS QUALITY:
+- Be thorough and detail-oriented
+- Quote specific language from documents (with page numbers)
+- Identify patterns across multiple documents
+- Note any missing or concerning provisions
+- Research legal standards for questionable clauses
+- Assess risk levels (High/Medium/Low)
+- Provide context about why something matters
+
+DOCUMENTATION:
+- Create clearly named files for your findings
+- Use descriptive filenames: /analysis/employment_agreements_findings.md
+- Structure your findings logically
+- Include document names and page numbers for every finding
+- Write clear, professional analysis
+
+Remember: Your findings will be used by the main agent to create the final report.
+Be thorough, accurate, and well-organized."""
+
+
+def create_analysis_subagent(
+    anthropic_api_key: str = None,
+    mcp_server_path: str = "./legal_doc_mcp_server.py"
+):
+    """
+    Create an Analysis subagent for detailed document investigation.
+    
+    This subagent is created fresh for each investigation task,
+    conducts focused analysis, and returns findings to the main agent.
+    
+    Args:
+        anthropic_api_key: API key for Claude
+        mcp_server_path: Path to the MCP server for document access
+    
+    Returns:
+        Configured Analysis subagent
+    """
+    
+    if anthropic_api_key is None:
+        anthropic_api_key = os.getenv("ANTHROPIC_API_KEY")
+    
+    # Note: We'll configure this subagent with MCP tools when we integrate
+    # For now, this shows the structure
+    
+    agent = create_deep_agent(
+        model="claude-sonnet-4-5-20250929",
+        system_prompt=ANALYSIS_SUBAGENT_PROMPT,
+        backend=lambda rt: StateBackend(rt),  # Ephemeral storage
+        # Tools will be added when integrated with main agent
+    )
+    
+    return agent
+```
+
+The Analysis subagent prompt is designed to guide thorough investigation while maintaining focus on the assigned task. Notice how it explains the tools available and when to use each one. The emphasis on documentation quality is important - these findings need to be well-organized for the final report synthesis.
+
+## Building the Create Report Subagent
+
+Now let's create the report synthesis subagent.
+
+```python
+# agents/report_subagent.py
+"""
+Report Creation Subagent
+
+This subagent synthesizes all analysis findings into a comprehensive
+legal risk analysis report.
+"""
+
+from deepagents import create_deep_agent
+from deepagents.backends import StateBackend
+import os
+
+# System prompt for Report subagent
+REPORT_SUBAGENT_PROMPT = """You are a legal report writer creating a comprehensive Legal Risk Analysis Report.
+
+Your task is to synthesize all analysis findings into a polished, professional report suitable for executive review.
+
+AVAILABLE INFORMATION:
+All analysis findings from the investigation phase are stored in the filesystem.
+Read all files to understand the complete picture of legal risks identified.
+
+REPORT STRUCTURE:
+
+# LEGAL RISK ANALYSIS REPORT
+
+## Executive Summary
+
+Provide a 2-3 paragraph overview:
+- What documents were analyzed
+- Key risks and concerns identified  
+- Critical action items requiring immediate attention
+
+## Risk Assessment by Category
+
+Organize findings into logical categories (adjust based on actual findings):
+
+### Contractual Obligations and Deadlines
+- List key obligations
+- Note critical deadlines
+- Assess compliance status
+
+### Liability and Indemnification
+- Identify liability exposure
+- Review indemnification clauses
+- Note limitations or concerns
+
+### Intellectual Property
+- Review IP assignment provisions
+- Check ownership clarity
+- Identify protection gaps
+
+### Regulatory Compliance
+- Note compliance requirements
+- Identify gaps or concerns
+- Assess risk level
+
+### Termination and Dispute Resolution
+- Review termination conditions
+- Note dispute mechanisms
+- Identify procedural requirements
+
+### Other Material Concerns
+- Any other significant findings
+
+For each risk identified:
+- Description: Clear explanation of the issue
+- Location: Specific documents and page numbers
+- Severity: High / Medium / Low
+- Impact: Potential consequences
+- Recommendation: Suggested action
+
+## Document-Specific Findings
+
+Provide a summary for each major document analyzed:
+- Document name and type
+- Key provisions
+- Main concerns
+- Cross-references to risk categories above
+
+## Recommendations and Next Steps
+
+Priority 1 (Immediate Action Required):
+- List critical items needing immediate attention
+
+Priority 2 (Near-term Review):
+- Items needing attention within 30-90 days
+
+Priority 3 (Ongoing Monitoring):
+- Items to track or review periodically
+
+Additional Recommendations:
+- Process improvements
+- Policy updates
+- Areas needing specialized legal counsel
+
+## Appendix
+
+- Methodology: How the analysis was conducted
+- Documents analyzed: Complete list with page counts
+- Limitations: Any gaps in analysis or areas not covered
+
+---
+
+FORMATTING GUIDELINES:
+- Use markdown formatting for clarity
+- Use headers and subheaders appropriately
+- Use bullet points for readability
+- Include specific page references for all findings
+- Use professional, clear language
+- Be concise but comprehensive
+- Prioritize findings by severity
+
+Write the complete report to /report/legal_risk_analysis_report.md
+
+Remember: This report will be read by executives and legal counsel.
+It must be thorough, accurate, well-organized, and actionable."""
+
+
+def create_report_subagent(
+    anthropic_api_key: str = None
+):
+    """
+    Create a Report Creation subagent for synthesizing findings.
+    
+    This subagent only needs filesystem access - it reads all the analysis
+    files and creates the final report.
+    
+    Args:
+        anthropic_api_key: API key for Claude
+    
+    Returns:
+        Configured Report subagent
+    """
+    
+    if anthropic_api_key is None:
+        anthropic_api_key = os.getenv("ANTHROPIC_API_KEY")
+    
+    agent = create_deep_agent(
+        model="claude-sonnet-4-5-20250929",
+        system_prompt=REPORT_SUBAGENT_PROMPT,
+        backend=lambda rt: StateBackend(rt),  # Just needs filesystem
+        # No additional tools needed - just filesystem access
+    )
+    
+    return agent
+```
+
+The Report subagent prompt provides a detailed template for the report structure. This ensures consistent, high-quality output regardless of what was found during analysis. Notice how it emphasizes specific page references, severity assessment, and actionable recommendations - these make the report immediately useful for decision-making.
+
+## Creating the Command-Line Interface
+
+Now we need a way to run this system and interact with it through human-in-the-loop approvals. Let's create a command-line interface that handles the approval workflow.
+
+```python
+# run_analysis.py
+"""
+Command-line interface for running legal risk analysis.
+
+This script demonstrates how to run the Deep Agent system with human-in-the-loop
+approvals via command line. In production, this would be replaced with a web UI.
+"""
+
+import uuid
+from pathlib import Path
+import sys
+import anthropic
+from langgraph.types import Command
+from langgraph.checkpoint.memory import MemorySaver
+from langgraph.store.memory import InMemoryStore
+
+# Import our agent system
+from agents.main_agent import create_legal_risk_agent, format_document_summaries_for_prompt
+from database import LegalDocumentDatabase
+
+
+def print_separator(char="=", length=70):
+    """Print a visual separator for clarity."""
+    print("\n" + char * length)
+
+
+def print_agent_message(message):
+    """Pretty-print an agent message."""
+    print_separator()
+    print("AGENT:")
+    print_separator("-")
+    if hasattr(message, 'content'):
+        print(message.content)
+    else:
+        print(message)
+
+
+def print_tool_call(tool_name, arguments):
+    """Pretty-print a tool call."""
+    print_separator()
+    print(f"TOOL CALL: {tool_name}")
+    print_separator("-")
+    print("Arguments:")
+    for key, value in arguments.items():
+        print(f"  {key}: {value}")
+
+
+def handle_approval(interrupt_data):
+    """
+    Handle a human-in-the-loop approval request.
+    
+    This function displays the pending action and prompts for user decision.
+    In a web UI, this would be a visual approval dialog.
+    
+    Returns:
+        List of decisions (approve/edit/reject) for each action request
+    """
+    print_separator("*")
+    print("*** HUMAN APPROVAL REQUIRED ***")
+    print_separator("*")
+    
+    # Extract interrupt information
+    # The interrupt contains action_requests (what the agent wants to do)
+    # and review_configs (what decisions are allowed)
+    interrupts = interrupt_data[0].value
+    action_requests = interrupts["action_requests"]
+    review_configs = interrupts["review_configs"]
+    
+    # Create a lookup map from tool name to review config
+    config_map = {cfg["action_name"]: cfg for cfg in review_configs}
+    
+    decisions = []
+    
+    for action in action_requests:
+        tool_name = action["name"]
+        arguments = action["args"]
+        review_config = config_map[tool_name]
+        
+        print(f"\nThe agent wants to call: {tool_name}")
+        print(f"With arguments: {arguments}")
+        print(f"Allowed decisions: {review_config['allowed_decisions']}")
+        
+        # Show context based on tool type
+        if tool_name == "write_todos":
+            print("\nProposed To-Do List:")
+            print(arguments.get("todos", ""))
+        
+        elif tool_name == "task":
+            print("\nProposed Subagent Task:")
+            print(f"  Subagent: {arguments.get('name', 'unknown')}")
+            print(f"  Task: {arguments.get('task', '')}")
+        
+        elif tool_name in ["write_file", "edit_file"]:
+            file_path = arguments.get("file_path", "unknown")
+            content = arguments.get("content", "")
+            print(f"\nFile: {file_path}")
+            print(f"Content (first 500 chars):\n{content[:500]}...")
+        
+        elif tool_name == "get_documents":
+            print(f"\nDocument IDs requested: {arguments.get('doc_ids', [])}")
+        
+        elif tool_name == "get_page_text":
+            print(f"\nDocument ID: {arguments.get('doc_id')}")
+            print(f"Pages: {arguments.get('page_nums', [])}")
+        
+        # Get user decision
+        while True:
+            decision_type = input("\nYour decision (approve/edit/reject): ").strip().lower()
+            
+            if decision_type not in review_config['allowed_decisions']:
+                print(f"Invalid choice. Allowed: {review_config['allowed_decisions']}")
+                continue
+            
+            if decision_type == "approve":
+                decisions.append({"type": "approve"})
+                print("✓ Approved")
+                break
+            
+            elif decision_type == "reject":
+                decisions.append({"type": "reject"})
+                print("✗ Rejected")
+                break
+            
+            elif decision_type == "edit":
+                print("\nEditing is complex in CLI. For now, approve or reject.")
+                print("(In a web UI, you'd have a form to edit the parameters)")
+                continue
+    
+    return decisions
+
+
+def run_analysis(user_message: str, db_path: str = "legal_documents.db"):
+    """
+    Run a legal risk analysis with human-in-the-loop approvals.
+    
+    This demonstrates the complete workflow:
+    1. Initialize the agent system
+    2. Send initial message with document summaries
+    3. Handle approvals as the agent works
+    4. Continue until analysis is complete
+    
+    Args:
+        user_message: The initial analysis request from the user
+        db_path: Path to the document database
+    """
+    
+    print_separator("=")
+    print("LEGAL RISK ANALYSIS SYSTEM")
+    print_separator("=")
+    
+    # Initialize database and load document summaries
+    print("\nLoading document summaries...")
+    db = LegalDocumentDatabase(db_path)
+    doc_summaries = format_document_summaries_for_prompt(db)
+    
+    print(f"Found {len(db.get_all_documents())} documents in database")
+    
+    # Create checkpointer and store
+    checkpointer = MemorySaver()
+    store = InMemoryStore()
+    
+    # Create the agent
+    print("\nInitializing agent system...")
+    agent = create_legal_risk_agent(
+        checkpointer=checkpointer,
+        store=store
+    )
+    
+    # Create a unique thread ID for this analysis session
+    thread_id = str(uuid.uuid4())
+    config = {"configurable": {"thread_id": thread_id}}
+    
+    print(f"Analysis session: {thread_id}")
+    
+    # Combine user message with document summaries
+    initial_message = f"""{user_message}
+
+{doc_summaries}
+
+Please develop a comprehensive analysis plan based on these documents."""
+    
+    print("\nStarting analysis...")
+    print_separator()
+    
+    # Main interaction loop
+    result = agent.invoke({
+        "messages": [{"role": "user", "content": initial_message}]
+    }, config=config)
+    
+    # Handle interrupts and continue until complete
+    while result.get("__interrupt__"):
+        # Display the interrupt and get user decisions
+        decisions = handle_approval(result["__interrupt__"])
+        
+        # Resume with the decisions
+        print("\nResuming agent execution...")
+        result = agent.invoke(
+            Command(resume={"decisions": decisions}),
+            config=config
+        )
+    
+    # Analysis complete
+    print_separator("=")
+    print("ANALYSIS COMPLETE")
+    print_separator("=")
+    
+    # Display final messages
+    final_messages = result.get("messages", [])
+    if final_messages:
+        print("\nFinal Agent Message:")
+        print_agent_message(final_messages[-1])
+    
+    # Check if report was created
+    print("\nChecking for generated report...")
+    # In a real system, we'd read from the filesystem backend
+    # For now, just indicate where to find it
+    print("Report should be available at: /report/legal_risk_analysis_report.md")
+    print("(Access through the agent's filesystem)")
+    
+    return result
+
+
+def main():
+    """Main entry point for command-line analysis."""
+    
+    print("\nLegal Risk Analysis System - Command Line Interface")
+    print("=" * 70)
+    
+    # Check database exists
+    db_path = "legal_documents.db"
+    if not Path(db_path).exists():
+        print(f"\nError: Database '{db_path}' not found.")
+        print("Please run ingest_documents.py first to process documents.")
+        sys.exit(1)
+    
+    # Get analysis request from user
+    print("\nWhat would you like to analyze?")
+    print("Example: 'Conduct a comprehensive legal risk analysis focusing on")
+    print("         contractual obligations, IP rights, and liability provisions'")
+    print()
+    
+    user_message = input("Your request: ").strip()
+    
+    if not user_message:
+        print("No request provided. Exiting.")
+        sys.exit(1)
+    
+    # Run the analysis
+    try:
+        run_analysis(user_message, db_path)
+    except KeyboardInterrupt:
+        print("\n\nAnalysis interrupted by user.")
+        sys.exit(0)
+    except Exception as e:
+        print(f"\n\nError during analysis: {e}")
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
+```
+
+This command-line interface provides the human-in-the-loop interaction model. When the agent wants to call a tool that requires approval, execution pauses and the script prompts the user for a decision. The user can see what the agent wants to do and decide whether to approve or reject it. This is the same approval mechanism that would be handled by your web UI later, just presented through the command line for testing.
+
+## Integrating the MCP Server with the Agents
+
+Now we need to connect the MCP server tools to our agents. This requires configuring the agents to use the MCP server as their document analysis tool provider.
+
+```python
+# agents/mcp_integration.py
+"""
+Integration layer for connecting MCP document analysis server to Deep Agents.
+
+This module handles the connection between the agent system and the MCP server,
+making the document analysis tools available to agents.
+"""
+
+import subprocess
+import json
+from typing import Optional
+import os
+
+
+class MCPServerConnection:
+    """
+    Manages connection to the MCP document analysis server.
+    
+    This class handles starting the MCP server process and communicating
+    with it via JSON-RPC over stdin/stdout.
+    """
+    
+    def __init__(self, server_path: str):
+        """
+        Initialize connection to MCP server.
+        
+        Args:
+            server_path: Path to the MCP server Python script
+        """
+        self.server_path = server_path
+        self.process = None
+    
+    def start(self):
+        """Start the MCP server process."""
+        if self.process is not None:
+            return  # Already started
+        
+        self.process = subprocess.Popen(
+            ['python', self.server_path],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1
+        )
+    
+    def stop(self):
+        """Stop the MCP server process."""
+        if self.process:
+            self.process.terminate()
+            self.process.wait()
+            self.process = None
+    
+    def call_tool(self, tool_name: str, arguments: dict) -> dict:
+        """
+        Call a tool on the MCP server.
+        
+        Args:
+            tool_name: Name of the tool to call
+            arguments: Arguments to pass to the tool
+        
+        Returns:
+            Tool execution result
+        """
+        if self.process is None:
+            raise RuntimeError("MCP server not started")
+        
+        # Construct JSON-RPC request
+        request = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": tool_name,
+                "arguments": arguments
+            }
+        }
+        
+        # Send request
+        request_json = json.dumps(request) + "\n"
+        self.process.stdin.write(request_json)
+        self.process.stdin.flush()
+        
+        # Read response
+        response_line = self.process.stdout.readline()
+        if not response_line:
+            raise RuntimeError("No response from MCP server")
+        
+        response = json.loads(response_line)
+        
+        if "error" in response:
+            raise RuntimeError(f"MCP server error: {response['error']}")
+        
+        return response.get("result", {})
+    
+    def __enter__(self):
+        """Context manager entry."""
+        self.start()
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Context manager exit."""
+        self.stop()
+
+
+def create_mcp_tools(server_path: str):
+    """
+    Create tool wrappers that connect to the MCP server.
+    
+    These tools can be added to Deep Agents to give them access to
+    the document analysis capabilities.
+    
+    Args:
+        server_path: Path to the MCP server script
+    
+    Returns:
+        List of tool functions
+    """
+    
+    # In a full implementation, you would create wrapper functions here
+    # that call the MCP server and return results in the format expected by agents
+    # For brevity, this shows the pattern
+    
+    connection = MCPServerConnection(server_path)
+    
+    def list_documents() -> str:
+        """List all available legal documents."""
+        result = connection.call_tool("list_documents", {})
+        # Extract text content from result
+        if "content" in result:
+            return result["content"][0]["text"]
+        return str(result)
+    
+    def get_documents(doc_ids: list[int]) -> str:
+        """Get detailed content for documents."""
+        result = connection.call_tool("get_documents", {"doc_ids": doc_ids})
+        if "content" in result:
+            return result["content"][0]["text"]
+        return str(result)
+    
+    def get_page_text(doc_id: int, page_nums: list[int]) -> str:
+        """Get text content of specific pages."""
+        result = connection.call_tool("get_page_text", {
+            "doc_id": doc_id,
+            "page_nums": page_nums
+        })
+        if "content" in result:
+            return result["content"][0]["text"]
+        return str(result)
+    
+    def get_page_image(doc_id: int, page_nums: list[int]) -> str:
+        """Get page images (limited use)."""
+        result = connection.call_tool("get_page_image", {
+            "doc_id": doc_id,
+            "page_nums": page_nums
+        })
+        if "content" in result:
+            return result["content"][0]["text"]
+        return str(result)
+    
+    return [list_documents, get_documents, get_page_text, get_page_image]
+```
+
+This integration layer manages the connection to the MCP server and exposes its tools as Python functions that can be added to the agents. The key insight here is that we're bridging two systems - the MCP protocol on one side and the Deep Agents framework on the other.
+
+## Testing the Complete System
+
+Now let's create a comprehensive test script that validates the entire system works correctly before adding a web interface.
+
+```python
+# test_agent_system.py
+"""
+Test script for the Deep Agent legal analysis system.
+
+This script tests the complete workflow:
+1. Document processing (assumes already done)
+2. MCP server connectivity
+3. Agent initialization
+4. Human-in-the-loop approvals
+5. Analysis execution
+6. Report generation
+"""
+
+import sys
+from pathlib import Path
+
+def test_prerequisites():
+    """Check that all prerequisites are met."""
+    print("Checking prerequisites...")
+    
+    # Check database exists
+    if not Path("legal_documents.db").exists():
+        print("✗ Database not found")
+        print("  Run: python ingest_documents.py")
+        return False
+    print("✓ Database found")
+    
+    # Check MCP server exists
+    if not Path("legal_doc_mcp_server.py").exists():
+        print("✗ MCP server not found")
+        return False
+    print("✓ MCP server found")
+    
+    # Check API key
+    import os
+    if not os.getenv("ANTHROPIC_API_KEY"):
+        print("✗ ANTHROPIC_API_KEY not set")
+        return False
+    print("✓ API key configured")
+    
+    return True
+
+
+def test_database():
+    """Test database connectivity and content."""
+    print("\nTesting database...")
+    
+    from database import LegalDocumentDatabase
+    db = LegalDocumentDatabase()
+    
+    docs = db.get_all_documents()
+    if not docs:
+        print("✗ No documents in database")
+        return False
+    
+    print(f"✓ Found {len(docs)} documents")
+    
+    for doc in docs[:3]:  # Show first 3
+        print(f"  - {doc['filename']}: {doc['total_pages']} pages")
+    
+    return True
+
+
+def test_mcp_server():
+    """Test MCP server can be started and responds."""
+    print("\nTesting MCP server...")
+    
+    from agents.mcp_integration import MCPServerConnection
+    
+    try:
+        with MCPServerConnection("legal_doc_mcp_server.py") as conn:
+            result = conn.call_tool("list_documents", {})
+            print("✓ MCP server responds")
+            return True
+    except Exception as e:
+        print(f"✗ MCP server error: {e}")
+        return False
+
+
+def test_agent_creation():
+    """Test that agents can be created."""
+    print("\nTesting agent creation...")
+    
+    from agents.main_agent import create_legal_risk_agent
+    
+    try:
+        agent = create_legal_risk_agent()
+        print("✓ Main agent created")
+        return True
+    except Exception as e:
+        print(f"✗ Agent creation error: {e}")
+        return False
+
+
+def run_tests():
+    """Run all tests."""
+    print("="*70)
+    print("LEGAL RISK ANALYSIS SYSTEM - TEST SUITE")
+    print("="*70)
+    
+    tests = [
+        ("Prerequisites", test_prerequisites),
+        ("Database", test_database),
+        ("MCP Server", test_mcp_server),
+        ("Agent Creation", test_agent_creation),
+    ]
+    
+    results = []
+    for name, test_func in tests:
+        try:
+            success = test_func()
+            results.append((name, success))
+        except Exception as e:
+            print(f"\n✗ {name} test crashed: {e}")
+            results.append((name, False))
+    
+    print("\n" + "="*70)
+    print("TEST RESULTS")
+    print("="*70)
+    
+    for name, success in results:
+        status = "✓ PASS" if success else "✗ FAIL"
+        print(f"{status}: {name}")
+    
+    all_passed = all(success for _, success in results)
+    
+    if all_passed:
+        print("\n✓ All tests passed! System is ready for analysis.")
+        print("\nRun: python run_analysis.py")
+    else:
+        print("\n✗ Some tests failed. Please fix issues before proceeding.")
+    
+    return all_passed
+
+
+if __name__ == "__main__":
+    success = run_tests()
+    sys.exit(0 if success else 1)
+```
+
+This test suite validates each layer of the system independently, helping you identify and fix issues before attempting a full analysis run.
+
+## Understanding the Complete Workflow
+
+Now let me walk you through what happens when you run an analysis with this system, because understanding the workflow helps you see how all the pieces fit together.
+
+When you run the analysis script, it first initializes the agent system. This creates the main agent with its configured subagents, sets up the filesystem backend with both ephemeral and persistent storage, initializes the checkpointer for state management, and connects to the MCP server for document access.
+
+You then provide your initial analysis request. The system loads all document summaries from the database and combines them with your request, giving the main agent a complete overview of what needs to be analyzed. The agent receives this combined message and begins its strategic planning.
+
+The agent's first action is almost always to call write todos to create an analysis plan. This triggers a human approval. The command-line interface displays the proposed to-do list, and you review it. You might see items like "Analyze employment agreements for restrictive covenants," "Review vendor contracts for liability provisions," "Examine IP assignment clauses," and "Assess regulatory compliance requirements." You can approve this plan as-is, or you could reject it and provide feedback to refine the approach.
+
+Once the plan is approved, the agent begins delegating investigations. It calls the task tool to invoke the Analysis subagent with a specific assignment. This triggers another approval where you see exactly what investigation is being delegated. You approve it, and the Analysis subagent begins working in isolation.
+
+The Analysis subagent first calls list documents to see what's available. It identifies relevant documents based on its assignment and calls get documents to retrieve them. This triggers an approval where you can see which documents are being accessed. You approve it, and the subagent receives the rich, multi-layered document content we designed - page summaries for navigation plus full text of legally significant pages.
+
+The subagent analyzes this content, perhaps noticing concerning language in a non-compete clause. It calls web search to research legal standards, triggering another approval. You approve the search, and it receives information about non-compete enforceability in your jurisdiction. It then calls write file to document its findings, triggering an approval where you can review what it discovered. You approve the file write, and the findings are saved to the filesystem.
+
+This investigation completes and control returns to the main agent. The main agent reviews the findings summary and decides what to investigate next. It invokes the Analysis subagent again with a new assignment, and the cycle repeats. This continues until all planned investigations are complete.
+
+Finally, the main agent determines that analysis is comprehensive and calls the task tool one last time to invoke the Create Report subagent. You approve this final delegation. The Report subagent reads all the analysis files from the filesystem, synthesizes the findings, and generates the comprehensive report. It calls write file to save the report, triggering a final approval where you can review the complete analysis before it's saved.
+
+The analysis session completes, and you now have a comprehensive legal risk analysis report based on systematic investigation of all your documents, with human oversight at every critical decision point.
+
+## Running Your First Analysis
+
+To use this system, follow these steps. First, ensure you've processed at least one PDF document through the ingestion pipeline. Second, set your Anthropic API key as an environment variable. Third, run the test suite to verify everything is configured correctly. Fourth, run the analysis script and provide your analysis request. Fifth, review and approve each action as the agents work through the analysis. Finally, review the generated report in the filesystem.
+
+The command sequence would look like this:
+
+```bash
+# Ensure documents are processed
+python ingest_documents.py
+
+# Set API key
+export ANTHROPIC_API_KEY='your-key-here'
+
+# Run tests
+python test_agent_system.py
+
+# Run analysis
+python run_analysis.py
+```
+
+When you run the analysis, you'll be prompted for your initial request. You might enter something like "Conduct a comprehensive legal risk analysis of all documents, focusing on contractual obligations, intellectual property rights, and regulatory compliance." The system then guides you through approving each step as the agents conduct their investigation.
+
+## Understanding the Benefits of This Architecture
+
+This three-layer system provides several significant advantages that make it powerful for legal analysis. The separation of concerns means document processing happens once upfront, agents focus on analysis strategy and delegation, and tools provide clean interfaces to data. This makes each layer testable and maintainable independently.
+
+The human-in-the-loop design ensures oversight without micromanagement. You approve strategic decisions like the analysis plan and which investigations to pursue, review significant actions like document access and file writes, but don't need to approve every tiny step. This keeps you in control while letting the agents work efficiently.
+
+The hierarchical delegation enables focused investigation. The main agent never gets overwhelmed with document details, subagents work in isolated contexts with clean objectives, and findings accumulate systematically in the filesystem. This mirrors how human legal teams actually work, with senior lawyers delegating specific investigations to junior analysts.
+
+The filesystem-based persistence creates a documented audit trail. Every investigation produces files that explain what was found, findings can be reviewed independently of the agent session, and the report synthesis has access to complete investigation history. This transparency is crucial for legal work where you need to understand how conclusions were reached.
+
+Does this Deep Agent implementation make sense? Can you see how the main agent coordinates while subagents investigate, how the approval system provides oversight, and how the filesystem ties everything together? Would you like me to explain any aspect in more depth before we move to building the web interface?
