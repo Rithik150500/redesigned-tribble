@@ -1,0 +1,571 @@
+# Layer 4: Building the Web Interface That Brings It All Together
+
+Now we reach the final layer - the web interface that transforms our command-line agent system into an interactive, visual workspace for collaborative legal analysis. This is where everything we've built comes alive. The user will see documents, watch agents think and work, review their decisions visually, and guide the analysis through an intuitive interface.
+
+Think of this web interface as the conductor's podium in an orchestra. The document processing layer prepared all the sheet music, the MCP server provides the instruments, the agents are the musicians, and now we're building the stage where the human conductor can see everything happening and guide the performance. The interface needs to show multiple things simultaneously - what documents are available, what the agents are planning and doing, what they're discovering, and most importantly, it needs to pause at critical moments to let you make decisions with full visual context.
+
+Let me walk you through building this interface step by step, and I'll explain not just what we're building but why each design decision matters for creating an effective collaborative workspace.
+
+## Understanding the Architecture
+
+Before we write any code, let's understand the architecture we're building. We need three main components working together. The backend server manages the agent runtime, handles the conversation state through LangGraph's checkpoint system, receives approval decisions from the frontend and resumes agent execution, and serves the document database content including PDFs and metadata. The frontend application displays the three-panel workspace with documents, workflow, and files, renders the agent conversation and to-do list in real-time, shows approval dialogs with context-aware highlighting, and manages the PDF viewer with page highlighting. The real-time communication layer keeps the frontend synchronized with agent execution, sends approval requests to the frontend when agents pause, and streams updates as agents work.
+
+We'll use a modern but straightforward technology stack. For the backend, we'll use FastAPI because it handles WebSocket connections beautifully for real-time updates, integrates naturally with async Python code like our agents, and provides automatic API documentation. For the frontend, we'll use React because its component-based architecture matches our three-panel design perfectly, it handles dynamic updates efficiently, and it has excellent libraries for PDF viewing and code editors. For real-time communication, we'll use WebSockets because they provide bidirectional real-time communication, enabling the backend to push updates to the frontend as agents work, and they're well-supported by both FastAPI and modern browsers.
+
+## Building the Backend API Server
+
+Let's start with the backend because it's the foundation that connects our agent system to the web interface. This server needs to do several complex things simultaneously, so we'll build it piece by piece.
+
+```python
+# web_server.py
+"""
+Web server for the Legal Risk Analysis system.
+
+This server provides:
+- REST API for document access and metadata
+- WebSocket connection for real-time agent communication
+- Agent runtime management with human-in-the-loop approvals
+- PDF serving and document preview
+"""
+
+from fastapi import FastAPI, WebSocket, HTTPException, File, UploadFile
+from fastapi.staticfiles import StaticFiles
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, StreamingResponse
+import asyncio
+import json
+import uuid
+from pathlib import Path
+from typing import Dict, Optional
+import io
+
+# Import our components
+from database import LegalDocumentDatabase
+from agents.main_agent import create_legal_risk_agent, format_document_summaries_for_prompt
+from langgraph.checkpoint.memory import MemorySaver
+from langgraph.store.memory import InMemoryStore
+from langgraph.types import Command
+
+# Initialize FastAPI application
+app = FastAPI(title="Legal Risk Analysis System")
+
+# Enable CORS so frontend can communicate with backend
+# In production, you'd restrict this to your frontend domain
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000"],  # React dev server
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Global state management
+# In production, you'd use proper session management and persistence
+class AnalysisSessionManager:
+    """
+    Manages active analysis sessions.
+    
+    Each session represents one analysis workflow with its own agent,
+    checkpointer, and conversation state. The session persists across
+    multiple WebSocket connections, allowing users to disconnect and
+    reconnect without losing their place.
+    """
+    
+    def __init__(self):
+        self.sessions: Dict[str, dict] = {}
+        self.db = LegalDocumentDatabase()
+    
+    def create_session(self, session_id: str = None) -> str:
+        """
+        Create a new analysis session.
+        
+        Returns the session ID that clients use to reconnect.
+        """
+        if session_id is None:
+            session_id = str(uuid.uuid4())
+        
+        # Create persistent components for this session
+        checkpointer = MemorySaver()
+        store = InMemoryStore()
+        
+        # Create the agent
+        agent = create_legal_risk_agent(
+            checkpointer=checkpointer,
+            store=store
+        )
+        
+        # Create a unique thread ID for this conversation
+        thread_id = str(uuid.uuid4())
+        config = {"configurable": {"thread_id": thread_id}}
+        
+        # Store session state
+        self.sessions[session_id] = {
+            "agent": agent,
+            "config": config,
+            "checkpointer": checkpointer,
+            "store": store,
+            "current_result": None,
+            "websocket": None,  # Will be set when client connects
+            "status": "ready"  # ready, analyzing, waiting_approval, complete
+        }
+        
+        return session_id
+    
+    def get_session(self, session_id: str) -> Optional[dict]:
+        """Get an existing session."""
+        return self.sessions.get(session_id)
+    
+    def delete_session(self, session_id: str):
+        """Delete a session and clean up resources."""
+        if session_id in self.sessions:
+            del self.sessions[session_id]
+
+# Initialize session manager
+session_manager = AnalysisSessionManager()
+
+
+# REST API Endpoints
+
+@app.get("/api/documents")
+async def list_documents():
+    """
+    Get list of all processed documents.
+    
+    This endpoint provides the initial data for the left panel document list.
+    """
+    docs = session_manager.db.get_all_documents()
+    return {"documents": docs}
+
+
+@app.get("/api/documents/{doc_id}")
+async def get_document_detail(doc_id: int):
+    """
+    Get detailed information about a specific document.
+    
+    This includes all page summaries and legally significant page markers,
+    which the frontend uses to render the PDF viewer with highlights.
+    """
+    doc = session_manager.db.get_document(doc_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+    
+    # Get all pages with their metadata
+    pages = session_manager.db.get_pages(doc_id)
+    
+    # Get legally significant page numbers for highlighting
+    significant_pages = [
+        p["page_num"] for p in pages if p["legally_significant"]
+    ]
+    
+    return {
+        "document": doc,
+        "pages": pages,
+        "significant_pages": significant_pages
+    }
+
+
+@app.get("/api/documents/{doc_id}/pdf")
+async def get_document_pdf(doc_id: int):
+    """
+    Serve the PDF file for viewing.
+    
+    The frontend PDF viewer uses this to display the actual document.
+    """
+    doc = session_manager.db.get_document(doc_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+    
+    filepath = Path(doc["filepath"])
+    if not filepath.exists():
+        raise HTTPException(status_code=404, detail="PDF file not found")
+    
+    return FileResponse(
+        filepath,
+        media_type="application/pdf",
+        filename=doc["filename"]
+    )
+
+
+@app.get("/api/documents/{doc_id}/page/{page_num}/image")
+async def get_page_image(doc_id: int, page_num: int):
+    """
+    Get the rendered image of a specific page.
+    
+    This is used when the PDF viewer wants to show page previews or
+    when the user wants to see the visual layout.
+    """
+    pages = session_manager.db.get_pages(doc_id, [page_num])
+    if not pages:
+        raise HTTPException(status_code=404, detail="Page not found")
+    
+    page_image = pages[0]["page_image"]
+    if not page_image:
+        raise HTTPException(status_code=404, detail="Page image not available")
+    
+    # Return the image as PNG
+    return StreamingResponse(
+        io.BytesIO(page_image),
+        media_type="image/png"
+    )
+
+
+@app.post("/api/sessions")
+async def create_analysis_session():
+    """
+    Create a new analysis session.
+    
+    The frontend calls this when starting a new analysis.
+    Returns the session ID that the frontend uses for WebSocket connection.
+    """
+    session_id = session_manager.create_session()
+    return {"session_id": session_id}
+
+
+@app.delete("/api/sessions/{session_id}")
+async def delete_analysis_session(session_id: str):
+    """
+    Delete an analysis session and clean up resources.
+    
+    Called when the user explicitly ends the analysis or closes the interface.
+    """
+    session_manager.delete_session(session_id)
+    return {"status": "deleted"}
+
+
+# WebSocket endpoint for real-time agent communication
+
+@app.websocket("/ws/{session_id}")
+async def websocket_endpoint(websocket: WebSocket, session_id: str):
+    """
+    WebSocket connection for real-time communication with the agent.
+    
+    This is the heart of the interface. The frontend connects via WebSocket
+    and sends/receives messages as the analysis progresses. The key
+    interactions are:
+    
+    1. Frontend sends: {"type": "start_analysis", "message": "..."}
+    2. Backend sends: {"type": "agent_message", "content": "..."}
+    3. Backend sends: {"type": "approval_required", "interrupt": {...}}
+    4. Frontend sends: {"type": "approval_decision", "decisions": [...]}
+    5. Backend sends: {"type": "analysis_complete"}
+    """
+    
+    # Get or create session
+    session = session_manager.get_session(session_id)
+    if not session:
+        await websocket.close(code=1008, reason="Session not found")
+        return
+    
+    # Accept WebSocket connection
+    await websocket.accept()
+    
+    # Store WebSocket in session for sending updates
+    session["websocket"] = websocket
+    
+    try:
+        # Send initial connection confirmation
+        await websocket.send_json({
+            "type": "connected",
+            "session_id": session_id,
+            "status": session["status"]
+        })
+        
+        # Main message loop
+        while True:
+            # Receive message from frontend
+            data = await websocket.receive_json()
+            message_type = data.get("type")
+            
+            if message_type == "start_analysis":
+                # User initiated analysis
+                await handle_start_analysis(session, data, websocket)
+            
+            elif message_type == "approval_decision":
+                # User made approval decisions
+                await handle_approval_decision(session, data, websocket)
+            
+            elif message_type == "ping":
+                # Keepalive ping
+                await websocket.send_json({"type": "pong"})
+            
+            else:
+                await websocket.send_json({
+                    "type": "error",
+                    "message": f"Unknown message type: {message_type}"
+                })
+    
+    except Exception as e:
+        print(f"WebSocket error: {e}")
+        await websocket.send_json({
+            "type": "error",
+            "message": str(e)
+        })
+    finally:
+        # Clean up WebSocket from session
+        if session["websocket"] == websocket:
+            session["websocket"] = None
+
+
+async def handle_start_analysis(session: dict, data: dict, websocket: WebSocket):
+    """
+    Handle the start of a new analysis.
+    
+    This function:
+    1. Gets the user's analysis request
+    2. Loads document summaries
+    3. Starts the agent with combined message
+    4. Streams updates back to frontend
+    5. Handles interrupts for approvals
+    """
+    
+    user_message = data.get("message", "")
+    if not user_message:
+        await websocket.send_json({
+            "type": "error",
+            "message": "No analysis message provided"
+        })
+        return
+    
+    # Update session status
+    session["status"] = "analyzing"
+    
+    # Get document summaries
+    doc_summaries = format_document_summaries_for_prompt(session_manager.db)
+    
+    # Combine user message with document summaries
+    initial_message = f"""{user_message}
+
+{doc_summaries}
+
+Please develop a comprehensive analysis plan based on these documents."""
+    
+    # Send starting message to frontend
+    await websocket.send_json({
+        "type": "analysis_started",
+        "message": "Starting legal risk analysis..."
+    })
+    
+    # Invoke the agent
+    agent = session["agent"]
+    config = session["config"]
+    
+    try:
+        result = agent.invoke({
+            "messages": [{"role": "user", "content": initial_message}]
+        }, config=config)
+        
+        # Store result in session
+        session["current_result"] = result
+        
+        # Check if we hit an interrupt (approval needed)
+        if result.get("__interrupt__"):
+            await handle_interrupt(session, result, websocket)
+        else:
+            # Analysis completed without interrupts (unlikely but possible)
+            await handle_completion(session, result, websocket)
+    
+    except Exception as e:
+        session["status"] = "error"
+        await websocket.send_json({
+            "type": "error",
+            "message": f"Analysis error: {str(e)}"
+        })
+
+
+async def handle_interrupt(session: dict, result: dict, websocket: WebSocket):
+    """
+    Handle an agent interrupt (approval required).
+    
+    This function extracts the interrupt information and sends it to
+    the frontend with all the context needed for the user to make an
+    informed decision.
+    """
+    
+    session["status"] = "waiting_approval"
+    
+    # Extract interrupt data
+    interrupt_data = result["__interrupt__"][0].value
+    action_requests = interrupt_data["action_requests"]
+    review_configs = interrupt_data["review_configs"]
+    
+    # Build context for each action request
+    enriched_actions = []
+    for action in action_requests:
+        tool_name = action["name"]
+        arguments = action["args"]
+        
+        # Find the review config for this action
+        review_config = next(
+            (cfg for cfg in review_configs if cfg["action_name"] == tool_name),
+            None
+        )
+        
+        # Add context based on tool type
+        context = await build_approval_context(tool_name, arguments)
+        
+        enriched_actions.append({
+            "tool_name": tool_name,
+            "arguments": arguments,
+            "review_config": review_config,
+            "context": context
+        })
+    
+    # Send approval request to frontend
+    await websocket.send_json({
+        "type": "approval_required",
+        "actions": enriched_actions,
+        "agent_messages": result.get("messages", [])
+    })
+
+
+async def build_approval_context(tool_name: str, arguments: dict) -> dict:
+    """
+    Build rich context for an approval request.
+    
+    This context helps the frontend show relevant information.
+    For example, for get_documents, we include document metadata
+    so the frontend can highlight those documents in the UI.
+    """
+    
+    context = {"tool": tool_name}
+    
+    if tool_name == "get_documents":
+        doc_ids = arguments.get("doc_ids", [])
+        # Get document metadata
+        docs = []
+        for doc_id in doc_ids:
+            doc = session_manager.db.get_document(doc_id)
+            if doc:
+                # Include page info for highlighting
+                pages = session_manager.db.get_pages(doc_id)
+                significant_pages = [
+                    p["page_num"] for p in pages if p["legally_significant"]
+                ]
+                docs.append({
+                    "doc_id": doc_id,
+                    "filename": doc["filename"],
+                    "significant_pages": significant_pages,
+                    "page_summaries": [
+                        {"page_num": p["page_num"], "summdesc": p["summdesc"]}
+                        for p in pages
+                    ]
+                })
+        context["documents"] = docs
+    
+    elif tool_name == "get_page_text":
+        doc_id = arguments.get("doc_id")
+        page_nums = arguments.get("page_nums", [])
+        doc = session_manager.db.get_document(doc_id)
+        if doc:
+            pages = session_manager.db.get_pages(doc_id, page_nums)
+            context["document"] = {
+                "doc_id": doc_id,
+                "filename": doc["filename"]
+            }
+            context["pages"] = [
+                {"page_num": p["page_num"], "summdesc": p["summdesc"]}
+                for p in pages
+            ]
+    
+    elif tool_name in ["write_file", "edit_file"]:
+        file_path = arguments.get("file_path", "")
+        content = arguments.get("content", "")
+        context["file"] = {
+            "path": file_path,
+            "content": content
+        }
+    
+    return context
+
+
+async def handle_approval_decision(session: dict, data: dict, websocket: WebSocket):
+    """
+    Handle approval decisions from the user.
+    
+    The user has reviewed the agent's proposed actions and decided
+    to approve, edit, or reject them. We now resume the agent with
+    those decisions.
+    """
+    
+    decisions = data.get("decisions", [])
+    if not decisions:
+        await websocket.send_json({
+            "type": "error",
+            "message": "No decisions provided"
+        })
+        return
+    
+    # Update status
+    session["status"] = "analyzing"
+    
+    # Send acknowledgment
+    await websocket.send_json({
+        "type": "approval_processed",
+        "message": "Resuming analysis with your decisions..."
+    })
+    
+    # Resume agent execution
+    agent = session["agent"]
+    config = session["config"]
+    
+    try:
+        result = agent.invoke(
+            Command(resume={"decisions": decisions}),
+            config=config
+        )
+        
+        # Store result
+        session["current_result"] = result
+        
+        # Check if we hit another interrupt
+        if result.get("__interrupt__"):
+            await handle_interrupt(session, result, websocket)
+        else:
+            # Analysis completed
+            await handle_completion(session, result, websocket)
+    
+    except Exception as e:
+        session["status"] = "error"
+        await websocket.send_json({
+            "type": "error",
+            "message": f"Resume error: {str(e)}"
+        })
+
+
+async def handle_completion(session: dict, result: dict, websocket: WebSocket):
+    """
+    Handle completion of the analysis.
+    
+    Send final messages and update status.
+    """
+    
+    session["status"] = "complete"
+    
+    # Get final messages
+    final_messages = result.get("messages", [])
+    
+    await websocket.send_json({
+        "type": "analysis_complete",
+        "final_messages": final_messages,
+        "message": "Analysis complete! Review the generated report in the files panel."
+    })
+
+
+# Serve static files for the React frontend
+# In production, you'd build the React app and serve the static bundle
+app.mount("/", StaticFiles(directory="frontend/build", html=True), name="frontend")
+
+
+if __name__ == "__main__":
+    import uvicorn
+    print("Starting Legal Risk Analysis Web Server...")
+    print("Backend API: http://localhost:8000")
+    print("Frontend UI: http://localhost:3000 (start separately with 'npm start')")
+    uvicorn.run(app, host="0.0.0.0", port=8000)
+```
+
+This backend server is sophisticated because it manages multiple concerns simultaneously. The REST API endpoints provide access to documents and metadata, letting the frontend display the document list and PDF viewer. The WebSocket connection provides real-time bidirectional communication, enabling the frontend to see agent progress and the backend to request approvals. The session manager maintains state across disconnections, so users can refresh their browser without losing their analysis progress.
+
+The key insight in this design is how we handle approvals. When an agent interrupt occurs, we don't just send raw data to the frontend. We enrich it with context - for a get documents request, we include the document metadata and significant page numbers so the frontend can immediately highlight the relevant documents and pages. This context-aware approach makes approvals meaningful rather than abstract.
+
+Now let me continue with the frontend implementation, explaining how it uses this backend to create the three-panel interactive workspace...
