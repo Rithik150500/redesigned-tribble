@@ -1,0 +1,746 @@
+## Building the Frontend Application
+
+Now let's build the React frontend that brings this system to life. The frontend is where the collaborative nature of the system becomes tangible - you'll see documents, watch agents reason, and make decisions with full visual context. I'll walk you through each component, explaining not just what it does but why it's designed that way.
+
+### Setting Up the Project Structure
+
+First, let's understand how we'll organize the frontend code. We'll create a React application with a clear component hierarchy that mirrors the three-panel layout. The main App component orchestrates everything and manages the WebSocket connection. The DocumentPanel shows the document list and transforms into a PDF viewer when you select a document. The WorkflowPanel displays agent messages, the to-do list, and approval dialogs. The FilePanel shows the agent's filesystem and provides a file editor. We'll also have several supporting components for the PDF viewer, approval dialogs, and file editors.
+
+```bash
+# Create React app structure
+npx create-react-app frontend
+cd frontend
+
+# Install dependencies we'll need
+npm install --save \
+  @react-pdf-viewer/core \
+  @react-pdf-viewer/default-layout \
+  @monaco-editor/react \
+  pdfjs-dist \
+  react-split-pane
+```
+
+Now let's start building the components. I'll begin with the WebSocket connection manager, because understanding how real-time communication works is fundamental to everything else.
+
+### WebSocket Connection Manager
+
+The WebSocket connection is the nervous system of our application. It carries messages in both directions - from the backend when agents are working, and to the backend when you make approval decisions. Let's create a clean abstraction for managing this connection.
+
+```javascript
+// src/services/websocket.js
+/**
+ * WebSocket connection manager for real-time agent communication.
+ * 
+ * This class handles:
+ * - Establishing and maintaining WebSocket connection
+ * - Reconnection logic if connection drops
+ * - Message parsing and routing to handlers
+ * - Sending messages to backend
+ * 
+ * The key insight here is that we want the rest of our app to not
+ * worry about connection details. Components just register handlers
+ * for message types they care about.
+ */
+
+class AgentWebSocket {
+  constructor(sessionId) {
+    this.sessionId = sessionId;
+    this.ws = null;
+    this.messageHandlers = new Map();
+    this.isConnecting = false;
+    this.reconnectAttempts = 0;
+    this.maxReconnectAttempts = 5;
+  }
+
+  /**
+   * Connect to the WebSocket server.
+   * 
+   * This establishes the connection and sets up event handlers.
+   * If the connection drops, we'll automatically try to reconnect.
+   */
+  connect() {
+    if (this.isConnecting || (this.ws && this.ws.readyState === WebSocket.OPEN)) {
+      return; // Already connected or connecting
+    }
+
+    this.isConnecting = true;
+    const wsUrl = `ws://localhost:8000/ws/${this.sessionId}`;
+    
+    this.ws = new WebSocket(wsUrl);
+
+    this.ws.onopen = () => {
+      console.log('WebSocket connected');
+      this.isConnecting = false;
+      this.reconnectAttempts = 0;
+      
+      // Notify handlers about connection
+      this.notifyHandlers('connected', { sessionId: this.sessionId });
+    };
+
+    this.ws.onmessage = (event) => {
+      try {
+        const message = JSON.parse(event.data);
+        this.handleMessage(message);
+      } catch (error) {
+        console.error('Error parsing WebSocket message:', error);
+      }
+    };
+
+    this.ws.onerror = (error) => {
+      console.error('WebSocket error:', error);
+      this.notifyHandlers('error', { error });
+    };
+
+    this.ws.onclose = () => {
+      console.log('WebSocket closed');
+      this.isConnecting = false;
+      
+      // Try to reconnect if we haven't exceeded max attempts
+      if (this.reconnectAttempts < this.maxReconnectAttempts) {
+        this.reconnectAttempts++;
+        console.log(`Reconnecting... (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
+        setTimeout(() => this.connect(), 2000 * this.reconnectAttempts);
+      } else {
+        this.notifyHandlers('connection_failed', {
+          message: 'Failed to connect after multiple attempts'
+        });
+      }
+    };
+  }
+
+  /**
+   * Handle an incoming message by routing it to registered handlers.
+   * 
+   * Each message has a 'type' field that tells us what kind of message it is.
+   * We call all handlers that are registered for that type.
+   */
+  handleMessage(message) {
+    const type = message.type;
+    console.log('Received message:', type, message);
+
+    // Call all handlers registered for this message type
+    const handlers = this.messageHandlers.get(type) || [];
+    handlers.forEach(handler => {
+      try {
+        handler(message);
+      } catch (error) {
+        console.error(`Error in handler for ${type}:`, error);
+      }
+    });
+  }
+
+  /**
+   * Register a handler for a specific message type.
+   * 
+   * Components use this to say "when you receive a message of type X,
+   * call my function". This is how the WorkflowPanel knows when
+   * approval is required, for example.
+   */
+  on(messageType, handler) {
+    if (!this.messageHandlers.has(messageType)) {
+      this.messageHandlers.set(messageType, []);
+    }
+    this.messageHandlers.get(messageType).push(handler);
+
+    // Return a cleanup function that components can call to unregister
+    return () => {
+      const handlers = this.messageHandlers.get(messageType);
+      const index = handlers.indexOf(handler);
+      if (index > -1) {
+        handlers.splice(index, 1);
+      }
+    };
+  }
+
+  /**
+   * Send a message to the backend.
+   * 
+   * This is how we send approval decisions, start analysis, etc.
+   */
+  send(message) {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify(message));
+    } else {
+      console.error('WebSocket not connected, cannot send message');
+    }
+  }
+
+  /**
+   * Notify handlers of an event.
+   * 
+   * This is used internally to broadcast connection events.
+   */
+  notifyHandlers(type, data) {
+    const handlers = this.messageHandlers.get(type) || [];
+    handlers.forEach(handler => handler(data));
+  }
+
+  /**
+   * Close the connection.
+   */
+  close() {
+    if (this.ws) {
+      this.ws.close();
+      this.ws = null;
+    }
+  }
+}
+
+export default AgentWebSocket;
+```
+
+This WebSocket manager is designed to be simple for components to use. A component just registers handlers for the message types it cares about, and the manager routes messages automatically. The reconnection logic ensures the app stays connected even if the network is flaky.
+
+### Main Application Component
+
+Now let's build the main App component that orchestrates the entire interface. This is where the three-panel layout comes together and where we manage the overall application state.
+
+```javascript
+// src/App.js
+/**
+ * Main application component for Legal Risk Analysis system.
+ * 
+ * This component:
+ * - Manages the WebSocket connection
+ * - Coordinates the three-panel layout
+ * - Maintains global state (selected document, current files, etc.)
+ * - Handles layout transitions (expanding panels when viewing documents)
+ */
+
+import React, { useState, useEffect, useCallback } from 'react';
+import SplitPane from 'react-split-pane';
+import './App.css';
+
+import DocumentPanel from './components/DocumentPanel';
+import WorkflowPanel from './components/WorkflowPanel';
+import FilePanel from './components/FilePanel';
+import AgentWebSocket from './services/websocket';
+
+function App() {
+  // Connection and session state
+  const [sessionId, setSessionId] = useState(null);
+  const [websocket, setWebsocket] = useState(null);
+  const [connectionStatus, setConnectionStatus] = useState('disconnected');
+
+  // UI state
+  const [selectedDocument, setSelectedDocument] = useState(null);
+  const [selectedFile, setSelectedFile] = useState(null);
+  const [layoutMode, setLayoutMode] = useState('default'); // default, document-view, file-edit
+
+  // Analysis state
+  const [documents, setDocuments] = useState([]);
+  const [agentMessages, setAgentMessages] = useState([]);
+  const [todos, setTodos] = useState([]);
+  const [files, setFiles] = useState([]);
+  const [approvalRequest, setApprovalRequest] = useState(null);
+
+  /**
+   * Initialize the session and WebSocket connection.
+   * 
+   * This runs once when the app loads. We create a new analysis session
+   * on the backend and connect via WebSocket.
+   */
+  useEffect(() => {
+    const initializeSession = async () => {
+      try {
+        // Create a new session
+        const response = await fetch('http://localhost:8000/api/sessions', {
+          method: 'POST'
+        });
+        const data = await response.json();
+        const newSessionId = data.session_id;
+        
+        setSessionId(newSessionId);
+        
+        // Create WebSocket connection
+        const ws = new AgentWebSocket(newSessionId);
+        
+        // Register message handlers
+        ws.on('connected', handleConnected);
+        ws.on('analysis_started', handleAnalysisStarted);
+        ws.on('agent_message', handleAgentMessage);
+        ws.on('approval_required', handleApprovalRequired);
+        ws.on('approval_processed', handleApprovalProcessed);
+        ws.on('analysis_complete', handleAnalysisComplete);
+        ws.on('error', handleError);
+        
+        // Connect
+        ws.connect();
+        setWebsocket(ws);
+        
+      } catch (error) {
+        console.error('Failed to initialize session:', error);
+      }
+    };
+
+    initializeSession();
+
+    // Cleanup on unmount
+    return () => {
+      if (websocket) {
+        websocket.close();
+      }
+    };
+  }, []); // Empty dependency array means this runs once on mount
+
+  /**
+   * Load documents from the backend.
+   * 
+   * This populates the document list in the left panel.
+   */
+  useEffect(() => {
+    const loadDocuments = async () => {
+      try {
+        const response = await fetch('http://localhost:8000/api/documents');
+        const data = await response.json();
+        setDocuments(data.documents);
+      } catch (error) {
+        console.error('Failed to load documents:', error);
+      }
+    };
+
+    loadDocuments();
+  }, []);
+
+  // WebSocket message handlers
+
+  const handleConnected = useCallback((data) => {
+    console.log('Connected to analysis session:', data.sessionId);
+    setConnectionStatus('connected');
+  }, []);
+
+  const handleAnalysisStarted = useCallback((data) => {
+    console.log('Analysis started:', data.message);
+    setAgentMessages(prev => [...prev, {
+      type: 'system',
+      content: data.message,
+      timestamp: new Date()
+    }]);
+  }, []);
+
+  const handleAgentMessage = useCallback((data) => {
+    console.log('Agent message:', data);
+    setAgentMessages(prev => [...prev, {
+      type: 'agent',
+      content: data.content,
+      timestamp: new Date()
+    }]);
+  }, []);
+
+  const handleApprovalRequired = useCallback((data) => {
+    console.log('Approval required:', data);
+    setApprovalRequest(data);
+    
+    // Add system message about approval
+    setAgentMessages(prev => [...prev, {
+      type: 'system',
+      content: 'Waiting for your approval...',
+      timestamp: new Date()
+    }]);
+  }, []);
+
+  const handleApprovalProcessed = useCallback((data) => {
+    console.log('Approval processed:', data.message);
+    setApprovalRequest(null);
+    
+    setAgentMessages(prev => [...prev, {
+      type: 'system',
+      content: data.message,
+      timestamp: new Date()
+    }]);
+  }, []);
+
+  const handleAnalysisComplete = useCallback((data) => {
+    console.log('Analysis complete:', data);
+    setAgentMessages(prev => [...prev, {
+      type: 'system',
+      content: data.message,
+      timestamp: new Date()
+    }]);
+  }, []);
+
+  const handleError = useCallback((data) => {
+    console.error('Agent error:', data);
+    setAgentMessages(prev => [...prev, {
+      type: 'error',
+      content: data.message || 'An error occurred',
+      timestamp: new Date()
+    }]);
+  }, []);
+
+  /**
+   * Start a new analysis.
+   * 
+   * This is called when the user types their analysis request and hits submit.
+   */
+  const startAnalysis = useCallback((message) => {
+    if (!websocket) {
+      console.error('WebSocket not connected');
+      return;
+    }
+
+    websocket.send({
+      type: 'start_analysis',
+      message: message
+    });
+  }, [websocket]);
+
+  /**
+   * Send approval decisions to the backend.
+   * 
+   * This is called when the user approves, edits, or rejects agent actions.
+   */
+  const sendApprovalDecisions = useCallback((decisions) => {
+    if (!websocket) {
+      console.error('WebSocket not connected');
+      return;
+    }
+
+    websocket.send({
+      type: 'approval_decision',
+      decisions: decisions
+    });
+  }, [websocket]);
+
+  /**
+   * Handle document selection.
+   * 
+   * When the user clicks a document in the left panel, we:
+   * 1. Set it as selected
+   * 2. Switch to document-view layout mode (left panel expands)
+   * 3. Load document details
+   */
+  const handleDocumentSelect = useCallback(async (doc) => {
+    setSelectedDocument(doc);
+    setLayoutMode('document-view');
+  }, []);
+
+  /**
+   * Handle file selection.
+   * 
+   * When the user clicks a file in the right panel, we:
+   * 1. Set it as selected
+   * 2. Switch to file-edit layout mode (right panel expands)
+   */
+  const handleFileSelect = useCallback((file) => {
+    setSelectedFile(file);
+    setLayoutMode('file-edit');
+  }, []);
+
+  /**
+   * Calculate panel sizes based on layout mode.
+   * 
+   * This creates the dynamic layout that adapts to what the user is viewing.
+   */
+  const getPanelSizes = () => {
+    switch (layoutMode) {
+      case 'document-view':
+        return { left: '40%', center: '40%', right: '20%' };
+      case 'file-edit':
+        return { left: '20%', center: '40%', right: '40%' };
+      default:
+        return { left: '20%', center: '60%', right: '20%' };
+    }
+  };
+
+  const sizes = getPanelSizes();
+
+  return (
+    <div className="App">
+      {/* Header */}
+      <div className="app-header">
+        <h1>Legal Risk Analysis System</h1>
+        <div className="connection-status">
+          <span className={`status-indicator ${connectionStatus}`}></span>
+          {connectionStatus === 'connected' ? 'Connected' : 'Connecting...'}
+        </div>
+      </div>
+
+      {/* Three-panel layout */}
+      <div className="app-content">
+        <SplitPane 
+          split="vertical" 
+          defaultSize={sizes.left}
+          minSize={150}
+        >
+          {/* Left panel: Documents */}
+          <DocumentPanel
+            documents={documents}
+            selectedDocument={selectedDocument}
+            onDocumentSelect={handleDocumentSelect}
+            approvalContext={approvalRequest?.actions?.find(a => 
+              a.tool_name === 'get_documents' || a.tool_name === 'get_page_text'
+            )}
+          />
+
+          <SplitPane 
+            split="vertical" 
+            defaultSize={sizes.center}
+            minSize={200}
+          >
+            {/* Center panel: Workflow */}
+            <WorkflowPanel
+              messages={agentMessages}
+              todos={todos}
+              approvalRequest={approvalRequest}
+              onStartAnalysis={startAnalysis}
+              onApprovalDecision={sendApprovalDecisions}
+              connectionStatus={connectionStatus}
+            />
+
+            {/* Right panel: Files */}
+            <FilePanel
+              files={files}
+              selectedFile={selectedFile}
+              onFileSelect={handleFileSelect}
+              approvalContext={approvalRequest?.actions?.find(a =>
+                a.tool_name === 'write_file' || a.tool_name === 'edit_file'
+              )}
+            />
+          </SplitPane>
+        </SplitPane>
+      </div>
+    </div>
+  );
+}
+
+export default App;
+```
+
+This main component is the conductor of the orchestra. It manages the WebSocket connection, coordinates message handling across all three panels, and controls the dynamic layout. The key insight here is that the component maintains minimal state - just enough to coordinate between panels - while each panel manages its own detailed state. This keeps the architecture clean and makes the app easier to debug.
+
+Notice how the layout adapts based on what the user is viewing. When you click a document, the left panel expands to show the PDF viewer while the center and right panels compress slightly. When you click a file, the right panel expands for editing. This dynamic allocation keeps the most relevant information prominent while maintaining context about the ongoing analysis.
+
+### Document Panel Component
+
+Now let's build the left panel that shows documents and transforms into a PDF viewer when needed. This component needs to handle two very different modes, so we'll build it with clear separation between the document list view and the document viewer mode.
+
+```javascript
+// src/components/DocumentPanel.js
+/**
+ * Document panel component.
+ * 
+ * This panel has two modes:
+ * 1. List mode: Shows all documents with summaries
+ * 2. Viewer mode: Shows full PDF viewer with highlighted pages
+ * 
+ * When the agent requests to access documents (get_documents or get_page_text),
+ * this panel highlights the relevant documents and pages to give you context
+ * for your approval decision.
+ */
+
+import React, { useState, useEffect } from 'react';
+import { Viewer, Worker } from '@react-pdf-viewer/core';
+import { defaultLayoutPlugin } from '@react-pdf-viewer/default-layout';
+import '@react-pdf-viewer/core/lib/styles/index.css';
+import '@react-pdf-viewer/default-layout/lib/styles/index.css';
+import './DocumentPanel.css';
+
+function DocumentPanel({ documents, selectedDocument, onDocumentSelect, approvalContext }) {
+  const [viewMode, setViewMode] = useState('list'); // 'list' or 'viewer'
+  const [documentDetail, setDocumentDetail] = useState(null);
+  const [highlightedPages, setHighlightedPages] = useState([]);
+  const [sidebarExpanded, setSidebarExpanded] = useState(true);
+
+  // Create PDF viewer plugin with default layout
+  const defaultLayoutPluginInstance = defaultLayoutPlugin();
+
+  /**
+   * When a document is selected, load its detailed information.
+   * 
+   * This includes all page summaries and legally significant page markers,
+   * which we use for highlighting in the viewer.
+   */
+  useEffect(() => {
+    if (selectedDocument) {
+      loadDocumentDetail(selectedDocument.doc_id);
+      setViewMode('viewer');
+    } else {
+      setViewMode('list');
+    }
+  }, [selectedDocument]);
+
+  /**
+   * When approval context changes (agent wants to access documents),
+   * update highlighting to show relevant documents and pages.
+   */
+  useEffect(() => {
+    if (approvalContext && approvalContext.context) {
+      const context = approvalContext.context;
+      
+      if (context.tool === 'get_documents' && context.documents) {
+        // Highlight documents that will be accessed
+        // For simplicity, we'll highlight the first one in the viewer
+        if (context.documents.length > 0) {
+          const firstDoc = context.documents[0];
+          setHighlightedPages(firstDoc.significant_pages || []);
+        }
+      } else if (context.tool === 'get_page_text' && context.pages) {
+        // Highlight specific pages that will be accessed
+        const pageNums = context.pages.map(p => p.page_num);
+        setHighlightedPages(pageNums);
+      }
+    } else {
+      // No approval context, show default highlighting (legally significant pages)
+      if (documentDetail) {
+        setHighlightedPages(documentDetail.significant_pages || []);
+      }
+    }
+  }, [approvalContext, documentDetail]);
+
+  /**
+   * Load detailed information about a document.
+   */
+  const loadDocumentDetail = async (docId) => {
+    try {
+      const response = await fetch(`http://localhost:8000/api/documents/${docId}`);
+      const data = await response.json();
+      setDocumentDetail(data);
+    } catch (error) {
+      console.error('Failed to load document detail:', error);
+    }
+  };
+
+  /**
+   * Handle clicking back to document list.
+   */
+  const handleBackToList = () => {
+    setViewMode('list');
+    onDocumentSelect(null);
+  };
+
+  /**
+   * Render the document list view.
+   */
+  const renderDocumentList = () => {
+    // Check if any documents are highlighted by approval context
+    const highlightedDocIds = approvalContext?.context?.documents?.map(d => d.doc_id) || [];
+
+    return (
+      <div className="document-list">
+        <div className="panel-header">
+          <h2>Data Room Documents</h2>
+          <span className="document-count">{documents.length} documents</span>
+        </div>
+
+        <div className="document-items">
+          {documents.map(doc => {
+            const isHighlighted = highlightedDocIds.includes(doc.doc_id);
+            
+            return (
+              <div
+                key={doc.doc_id}
+                className={`document-item ${isHighlighted ? 'highlighted' : ''}`}
+                onClick={() => onDocumentSelect(doc)}
+              >
+                <div className="document-icon">📄</div>
+                <div className="document-info">
+                  <div className="document-name">{doc.filename}</div>
+                  <div className="document-summary">{doc.summdesc}</div>
+                  <div className="document-meta">
+                    {doc.total_pages} pages
+                    {doc.legally_significant_pages > 0 && (
+                      <span className="significant-badge">
+                        ⚖️ {doc.legally_significant_pages} significant
+                      </span>
+                    )}
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    );
+  };
+
+  /**
+   * Render the PDF viewer with page highlighting.
+   */
+  const renderDocumentViewer = () => {
+    if (!selectedDocument || !documentDetail) {
+      return <div className="loading">Loading document...</div>;
+    }
+
+    const pdfUrl = `http://localhost:8000/api/documents/${selectedDocument.doc_id}/pdf`;
+
+    return (
+      <div className="document-viewer">
+        <div className="viewer-header">
+          <button onClick={handleBackToList} className="back-button">
+            ← Back to Documents
+          </button>
+          <h3>{selectedDocument.filename}</h3>
+        </div>
+
+        <div className="viewer-layout">
+          {/* Collapsible sidebar with page summaries */}
+          <div className={`page-sidebar ${sidebarExpanded ? 'expanded' : 'collapsed'}`}>
+            <div className="sidebar-toggle" onClick={() => setSidebarExpanded(!sidebarExpanded)}>
+              {sidebarExpanded ? '◀' : '▶'}
+            </div>
+            
+            {sidebarExpanded && (
+              <div className="page-summaries">
+                <h4>Page Summaries</h4>
+                {documentDetail.pages.map(page => {
+                  const isHighlighted = highlightedPages.includes(page.page_num);
+                  const isSignificant = page.legally_significant;
+                  
+                  return (
+                    <div
+                      key={page.page_num}
+                      className={`page-summary-item ${isHighlighted ? 'highlighted' : ''} ${isSignificant ? 'significant' : ''}`}
+                    >
+                      <div className="page-number">
+                        {isSignificant && '⚖️ '}
+                        Page {page.page_num}
+                      </div>
+                      <div className="page-summdesc">{page.summdesc}</div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          {/* PDF viewer */}
+          <div className="pdf-viewer-container">
+            <Worker workerUrl="https://unpkg.com/pdfjs-dist@3.4.120/build/pdf.worker.min.js">
+              <Viewer
+                fileUrl={pdfUrl}
+                plugins={[defaultLayoutPluginInstance]}
+              />
+            </Worker>
+          </div>
+        </div>
+
+        {/* Highlight indicator */}
+        {highlightedPages.length > 0 && (
+          <div className="highlight-indicator">
+            <span className="indicator-icon">⚠️</span>
+            Highlighted pages: {highlightedPages.join(', ')}
+            <span className="indicator-reason">
+              {approvalContext ? '(Agent requesting access)' : '(Legally significant)'}
+            </span>
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  return (
+    <div className="document-panel">
+      {viewMode === 'list' ? renderDocumentList() : renderDocumentViewer()}
+    </div>
+  );
+}
+
+export default DocumentPanel;
+```
+
+This document panel elegantly handles two very different modes. In list mode, it shows a scannable overview of all documents with their summaries and metadata. When the agent requests document access for approval, it highlights those specific documents so you can see at a glance what's being accessed. In viewer mode, it shows the full PDF with a collapsible sidebar containing page summaries. The highlighting system works here too - when the agent wants specific pages, those pages and their summaries are highlighted so you can quickly review them before approving the access.
+
+The collapsible sidebar is a key feature. When you first open a document, the sidebar is expanded so you can see the document structure through page summaries. As you get familiar with the document, you can collapse the sidebar to focus on the PDF content. The sidebar remains contextual - it always highlights the pages the agent is interested in, making your approval decisions well-informed.
+
+Let me continue with the Workflow Panel, which is the heart of the user interface where you see the agent's thinking and make approval decisions...
