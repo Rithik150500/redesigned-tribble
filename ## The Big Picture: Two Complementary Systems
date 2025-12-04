@@ -1,0 +1,128 @@
+I'll explain these documents, which cover two interconnected but distinct systems for building AI agents and tools.
+
+## The Big Picture: Two Complementary Systems
+
+These documents describe **two main technologies** that work together:
+
+1. **Model Context Protocol (MCP)** - A standardized way for AI applications to access external tools and data
+2. **Deep Agents / LangSmith Agent Builder** - A framework for building sophisticated AI agents with memory, planning, and tool usage capabilities
+
+Think of MCP as the "universal adapter" that lets AI applications connect to any data source or tool, while Deep Agents is a complete agent-building framework that can use MCP servers as one of its many capabilities.
+
+## Model Context Protocol (MCP) - The Foundation
+
+MCP solves a fundamental problem: **how do AI applications safely and efficiently access external context?**
+
+### The Architecture
+
+MCP uses a client-server architecture with three key participants:
+
+**MCP Hosts** are AI applications like Claude Desktop or VS Code that users interact with. When you use Claude Desktop, it acts as the host.
+
+**MCP Clients** are created by hosts to maintain connections with servers. Each client handles one direct connection to one server, establishing a one-to-one relationship.
+
+**MCP Servers** are programs that provide context to clients. They can run locally on your machine or remotely in the cloud. For example, a filesystem server gives access to your local files, while a Sentry server might run on Sentry's infrastructure.
+
+### What MCP Servers Provide
+
+Servers expose three types of primitives:
+
+**Tools** are functions that AI can actively call to perform actions. The AI decides when to use them based on your requests. Examples include searching flights, sending messages, or creating calendar events. When you ask Claude "What's the weather in Sacramento?", it uses the weather server's `get_forecast` tool.
+
+**Resources** are passive data sources that provide read-only information for context. These include file contents, database schemas, or API documentation. The application decides how to use these, whether selecting relevant portions or passing everything to the model.
+
+**Prompts** are pre-built instruction templates that help accomplish specific tasks. They're user-controlled, requiring explicit invocation rather than automatic triggering.
+
+### How Communication Works
+
+MCP implements two layers:
+
+The **data layer** uses JSON-RPC 2.0 for communication. It handles lifecycle management through initialization and capability negotiation, allowing clients and servers to agree on what features they support. It also manages the core primitives and enables real-time notifications when things change.
+
+The **transport layer** manages how messages are actually sent. Stdio transport uses standard input/output for local processes with no network overhead, while Streamable HTTP uses HTTP POST for remote servers with optional Server-Sent Events for streaming.
+
+### Advanced Client Features
+
+MCP clients can offer capabilities to servers:
+
+**Elicitation** lets servers request specific information from users during interactions. A travel booking server might ask for your seat preference or contact number when finalizing a booking.
+
+**Sampling** allows servers to request language model completions through the client, enabling AI-powered analysis without the server needing its own AI model access.
+
+**Roots** define filesystem boundaries, helping servers understand which directories they should focus on.
+
+## Deep Agents - The Agent Framework
+
+While MCP provides the connectivity layer, Deep Agents provides the **orchestration and intelligence layer** for building sophisticated AI agents.
+
+### The Middleware Architecture
+
+Deep Agents uses a modular middleware system with three core components:
+
+**TodoListMiddleware** gives agents planning capabilities. Before tackling complex tasks, the agent can write out a to-do list, then adapt it as new information comes in. This mirrors how Claude Code visibly plans before executing multi-part tasks.
+
+**FilesystemMiddleware** provides tools for memory management with four operations: `ls` lists files, `read_file` reads content, `write_file` creates files, and `edit_file` modifies existing files. This solves a critical challenge: when tools return large results, they can overwhelm the agent's context window. The filesystem lets agents offload data, reading back only what they need when they need it.
+
+**SubAgentMiddleware** enables task delegation. When the main agent encounters a complex subtask, it can create a specialized subagent to handle it. The subagent works in isolation, and only the final result returns to the main agent. This keeps the main agent's context clean while still accomplishing detailed work.
+
+### Storage and Memory
+
+Deep Agents implements a sophisticated approach to memory through pluggable backends:
+
+**StateBackend** stores files in the agent's state, making them ephemeral within a single conversation thread. This works well for scratch work and temporary data.
+
+**FilesystemBackend** provides access to your actual filesystem, with security features like path validation and sandboxing. You can give an agent read/write access to specific directories on your machine.
+
+**StoreBackend** uses LangGraph's Store for persistent, cross-thread storage. Files here survive across different conversations, enabling true long-term memory.
+
+**CompositeBackend** routes different filesystem paths to different backends. You might route `/memories/` to persistent storage while keeping everything else ephemeral. This creates a hybrid system where some context persists long-term while working files remain temporary.
+
+### Context Management Through Subagents
+
+The subagent system deserves special attention because it solves the **context bloat problem**. When agents use tools with large outputs—web searches, file reads, database queries—the context window fills up quickly with intermediate results.
+
+Subagents isolate this detailed work. The main agent receives only the final result, not the dozens of tool calls that produced it. You can define specialized subagents with custom instructions and tools, or use the built-in "general-purpose" subagent that has the same capabilities as the main agent but provides context isolation.
+
+For example, instead of the main agent making ten web searches and filling its context with results, it delegates to a subagent: `task(name="research-agent", task="Research quantum computing trends")`. The subagent performs all searches internally and returns only a summary.
+
+### Human-in-the-Loop Controls
+
+Deep Agents includes sophisticated approval mechanisms. You can configure which tools require human approval before execution through the `interrupt_on` parameter. When an interrupt triggers, the agent pauses and presents the proposed action for review. You can approve, edit the parameters, or reject the action entirely.
+
+This ensures agents handle routine tasks automatically while maintaining oversight over sensitive operations like deleting files, sending emails, or making purchases.
+
+## LangSmith Agent Builder - The Platform
+
+LangSmith Agent Builder brings these concepts together into a managed platform:
+
+**Triggers** define when agents run, whether responding to Slack messages, incoming emails, or recurring schedules.
+
+**Memory and Self-Updates** let agents remember information from previous conversations and even modify themselves. They can add new tools, remove unnecessary ones, or adjust their instructions based on what they learn.
+
+**The Tool Server Framework** enables building custom tools that integrate with agents. It provides standardized authentication through OAuth, supports aggregating tools from multiple MCP servers, and includes built-in validation and error handling.
+
+## How It All Connects
+
+Here's how these pieces work together in practice:
+
+When you build an MCP server (like the weather server tutorial), you're creating a tool that any MCP-compatible application can use. The weather server exposes `get_alerts` and `get_forecast` as tools through the MCP protocol.
+
+When you build a Deep Agent, you're creating an intelligent system that can use MCP servers (among other tools). A Deep Agent might connect to your weather server, use its filesystem for memory management, delegate complex tasks to subagents, and require approval before taking sensitive actions.
+
+LangSmith Agent Builder provides the platform infrastructure, making it easy to deploy these agents with automatic tool discovery, managed authentication, and user-friendly configuration.
+
+The tutorial at the end demonstrates this integration: you build a weather MCP server, then connect it to Claude Desktop (an MCP host). Claude can now answer weather questions by calling your server's tools through the MCP protocol.
+
+## Why This Architecture Matters
+
+This layered approach provides several key benefits:
+
+**Separation of concerns** means you can build tools once and use them with any MCP-compatible application. Your weather server works with Claude Desktop, custom agents, or any other MCP host.
+
+**Composability** lets you combine multiple MCP servers and middleware components to create sophisticated systems. An agent might use filesystem servers for document access, database servers for data queries, and custom servers for domain-specific operations.
+
+**Flexibility** allows choosing the right level of abstraction. Build simple MCP tools for straightforward tasks, or create complex Deep Agents with planning, memory, and hierarchical delegation for sophisticated workflows.
+
+**Security and control** come from multiple layers of safeguards, from MCP's transport-level authentication to Deep Agents' human-in-the-loop approvals.
+
+Is there a specific aspect of these systems you'd like me to explain in more depth?
